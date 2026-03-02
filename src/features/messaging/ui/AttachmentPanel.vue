@@ -8,11 +8,11 @@ interface Props {
 }
 
 const props = defineProps<Props>();
-const emit = defineEmits<{ close: []; selectPhoto: []; selectFile: [] }>();
+const emit = defineEmits<{ close: []; selectPhoto: []; selectFile: []; selectPoll: [] }>();
 
 const panelStyle = computed(() => {
   const menuW = 200;
-  const menuH = 112;
+  const menuH = 160;
   const pad = 8;
   let left = props.x - menuW / 2;
   let top = props.y - menuH - pad;
@@ -24,6 +24,7 @@ const panelStyle = computed(() => {
 
 const selectPhoto = () => { emit("selectPhoto"); emit("close"); };
 const selectFile = () => { emit("selectFile"); emit("close"); };
+const selectPoll = () => { emit("selectPoll"); emit("close"); };
 </script>
 
 <template>
@@ -54,6 +55,17 @@ const selectFile = () => { emit("selectFile"); emit("close"); };
               <polyline points="14 2 14 8 20 8" />
             </svg>
             File
+          </button>
+          <button
+            class="flex w-full items-center gap-3 px-4 py-3 text-left text-sm text-text-color transition-colors hover:bg-neutral-grad-0"
+            @click="selectPoll"
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="shrink-0 text-color-bg-ac">
+              <rect x="3" y="4" width="7" height="4" rx="1" />
+              <rect x="3" y="10" width="13" height="4" rx="1" />
+              <rect x="3" y="16" width="10" height="4" rx="1" />
+            </svg>
+            Poll
           </button>
         </div>
       </div>

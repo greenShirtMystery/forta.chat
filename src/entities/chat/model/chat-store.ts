@@ -7,7 +7,7 @@ import { cacheRooms, getCachedRooms, cacheMessages, getCachedMessages } from "@/
 import { defineStore } from "pinia";
 import { computed, ref, shallowRef, triggerRef } from "vue";
 
-import type { ChatRoom, FileInfo, Message, ReplyTo } from "./types";
+import type { ChatRoom, FileInfo, Message, PollInfo, ReplyTo } from "./types";
 import { MessageStatus, MessageType } from "./types";
 
 const NAMESPACE = "chat";
@@ -203,6 +203,16 @@ function matrixRoomToChatRoom(room: any, kit: MatrixKit, myUserId: string, nameH
     } catch { /* ignore */ }
   }
 
+  // Read room topic
+  let topic: string | undefined;
+  try {
+    const topicEvent = room.currentState?.getStateEvents?.("m.room.topic", "");
+    const topicContent = topicEvent?.getContent?.()?.topic ?? topicEvent?.event?.content?.topic;
+    if (topicContent && typeof topicContent === "string") {
+      topic = topicContent;
+    }
+  } catch { /* ignore */ }
+
   return {
     id: roomId,
     name: displayName,
@@ -213,6 +223,7 @@ function matrixRoomToChatRoom(room: any, kit: MatrixKit, myUserId: string, nameH
     isGroup,
     updatedAt: lastTs || 0,
     membership: membership === "invite" ? "invite" : "join",
+    topic,
   };
 }
 
@@ -284,24 +295,83 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     forwardingMessages.value = false;
   };
 
-  // Pinned messages (Batch 10)
+  // Server-synced pinned messages (m.room.pinned_events state event)
   const pinnedMessages = ref<Message[]>([]);
   const pinnedMessageIndex = ref(0);
 
-  const pinMessage = (messageId: string) => {
-    const roomId = activeRoomId.value;
-    if (!roomId) return;
-    const msg = messages.value[roomId]?.find(m => m.id === messageId);
-    if (msg && !pinnedMessages.value.some(p => p.id === messageId)) {
-      pinnedMessages.value.push(msg);
-      pinnedMessageIndex.value = pinnedMessages.value.length - 1;
+  /** Load pinned messages from room state (m.room.pinned_events) */
+  const loadPinnedMessages = async (roomId: string) => {
+    try {
+      const matrixService = getMatrixClientService();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const matrixRoom = matrixService.getRoom(roomId) as any;
+      if (!matrixRoom) return;
+      const pinEvent = matrixRoom.currentState?.getStateEvents?.("m.room.pinned_events", "");
+      const pinnedIds: string[] = pinEvent?.getContent?.()?.pinned ?? pinEvent?.event?.content?.pinned ?? [];
+      if (pinnedIds.length === 0) {
+        pinnedMessages.value = [];
+        pinnedMessageIndex.value = 0;
+        return;
+      }
+      // Resolve event IDs to Message objects from loaded messages
+      const roomMsgs = messages.value[roomId] ?? [];
+      const resolved: Message[] = [];
+      for (const eventId of pinnedIds) {
+        const msg = roomMsgs.find(m => m.id === eventId);
+        if (msg) resolved.push(msg);
+      }
+      pinnedMessages.value = resolved;
+      pinnedMessageIndex.value = Math.min(pinnedMessageIndex.value, Math.max(0, resolved.length - 1));
+    } catch (e) {
+      console.warn("[chat-store] loadPinnedMessages error:", e);
     }
   };
 
-  const unpinMessage = (messageId: string) => {
-    pinnedMessages.value = pinnedMessages.value.filter(m => m.id !== messageId);
-    if (pinnedMessageIndex.value >= pinnedMessages.value.length) {
-      pinnedMessageIndex.value = Math.max(0, pinnedMessages.value.length - 1);
+  /** Pin a message (server-synced via m.room.pinned_events state event) */
+  const pinMessage = async (messageId: string) => {
+    const roomId = activeRoomId.value;
+    if (!roomId) return;
+    try {
+      const matrixService = getMatrixClientService();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const matrixRoom = matrixService.getRoom(roomId) as any;
+      if (!matrixRoom) return;
+      const pinEvent = matrixRoom.currentState?.getStateEvents?.("m.room.pinned_events", "");
+      const currentPinned: string[] = pinEvent?.getContent?.()?.pinned ?? pinEvent?.event?.content?.pinned ?? [];
+      if (currentPinned.includes(messageId)) return; // already pinned
+      const newPinned = [...currentPinned, messageId];
+      await matrixService.sendStateEvent(roomId, "m.room.pinned_events", { pinned: newPinned }, "");
+      // Optimistic update
+      const msg = messages.value[roomId]?.find(m => m.id === messageId);
+      if (msg && !pinnedMessages.value.some(p => p.id === messageId)) {
+        pinnedMessages.value = [...pinnedMessages.value, msg];
+        pinnedMessageIndex.value = pinnedMessages.value.length - 1;
+      }
+    } catch (e) {
+      console.warn("[chat-store] pinMessage error:", e);
+    }
+  };
+
+  /** Unpin a message (server-synced) */
+  const unpinMessage = async (messageId: string) => {
+    const roomId = activeRoomId.value;
+    if (!roomId) return;
+    try {
+      const matrixService = getMatrixClientService();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const matrixRoom = matrixService.getRoom(roomId) as any;
+      if (!matrixRoom) return;
+      const pinEvent = matrixRoom.currentState?.getStateEvents?.("m.room.pinned_events", "");
+      const currentPinned: string[] = pinEvent?.getContent?.()?.pinned ?? pinEvent?.event?.content?.pinned ?? [];
+      const newPinned = currentPinned.filter(id => id !== messageId);
+      await matrixService.sendStateEvent(roomId, "m.room.pinned_events", { pinned: newPinned }, "");
+      // Optimistic update
+      pinnedMessages.value = pinnedMessages.value.filter(m => m.id !== messageId);
+      if (pinnedMessageIndex.value >= pinnedMessages.value.length) {
+        pinnedMessageIndex.value = Math.max(0, pinnedMessages.value.length - 1);
+      }
+    } catch (e) {
+      console.warn("[chat-store] unpinMessage error:", e);
     }
   };
 
@@ -810,6 +880,99 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     }
   };
 
+  /** Upload and set a new room avatar (group chats) */
+  const setRoomAvatar = async (roomId: string, file: File): Promise<boolean> => {
+    try {
+      const matrixService = getMatrixClientService();
+      const mxcUrl = await matrixService.uploadContentMxc(file);
+      await matrixService.sendStateEvent(roomId, "m.room.avatar", { url: mxcUrl }, "");
+      const httpUrl = matrixService.mxcToHttp(mxcUrl);
+      const room = rooms.value.find(r => r.id === roomId);
+      if (room && httpUrl) room.avatar = httpUrl;
+      return true;
+    } catch (e) {
+      console.warn("[chat-store] setRoomAvatar error:", e);
+      return false;
+    }
+  };
+
+  /** Set or clear the room topic/description */
+  const setRoomTopic = async (roomId: string, topic: string): Promise<boolean> => {
+    try {
+      const matrixService = getMatrixClientService();
+      await matrixService.setRoomTopic(roomId, topic);
+      const room = rooms.value.find(r => r.id === roomId);
+      if (room) room.topic = topic;
+      return true;
+    } catch (e) {
+      console.warn("[chat-store] setRoomTopic error:", e);
+      return false;
+    }
+  };
+
+  /** Ban a user from a room */
+  const banMember = async (roomId: string, address: string): Promise<boolean> => {
+    try {
+      const matrixService = getMatrixClientService();
+      const hexId = hexEncode(address).toLowerCase();
+      const targetMatrixId = matrixService.matrixId(hexId);
+      await matrixService.ban(roomId, targetMatrixId);
+      // Optimistic: remove from members
+      const room = rooms.value.find(r => r.id === roomId);
+      if (room) {
+        room.members = room.members.filter(m => m !== hexId);
+      }
+      return true;
+    } catch (e) {
+      console.warn("[chat-store] banMember error:", e);
+      return false;
+    }
+  };
+
+  /** Unban a user from a room */
+  const unbanMember = async (roomId: string, userId: string): Promise<boolean> => {
+    try {
+      const matrixService = getMatrixClientService();
+      await matrixService.unban(roomId, userId);
+      return true;
+    } catch (e) {
+      console.warn("[chat-store] unbanMember error:", e);
+      return false;
+    }
+  };
+
+  /** Get banned members for a room. Returns array of { userId, name } */
+  const getBannedMembers = (roomId: string): Array<{ userId: string; name: string }> => {
+    try {
+      const matrixService = getMatrixClientService();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const matrixRoom = matrixService.getRoom(roomId) as any;
+      if (!matrixRoom) return [];
+      const banned = matrixRoom.getMembersWithMembership?.("ban") ?? [];
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return banned.map((m: any) => ({
+        userId: m.userId as string,
+        name: (m.rawDisplayName as string) || (m.name as string) || matrixIdToAddress(m.userId as string),
+      }));
+    } catch {
+      return [];
+    }
+  };
+
+  /** Mute/unmute a member by setting power level to -1 (muted) or 0 (normal) */
+  const muteMember = async (roomId: string, address: string, mute: boolean): Promise<boolean> => {
+    return setMemberPowerLevel(roomId, address, mute ? -1 : 0);
+  };
+
+  /** Check if a member is muted (power level < 0) */
+  const isMemberMuted = (roomId: string, hexId: string): boolean => {
+    const { levels } = getRoomPowerLevels(roomId);
+    const matrixService = getMatrixClientService();
+    const targetMatrixId = matrixService.matrixId(hexId);
+    const level = levels[targetMatrixId] ?? 0;
+    return level < 0;
+  };
+
   /** Invite a user to a room */
   const inviteMember = async (roomId: string, address: string): Promise<boolean> => {
     try {
@@ -1002,6 +1165,15 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       }
     } else if (eventType === "m.room.power_levels") {
       text = `${senderName} changed room permissions`;
+    } else if (eventType === "m.room.avatar") {
+      text = `${senderName} changed the room photo`;
+    } else if (eventType === "m.room.topic") {
+      const newTopic = (content.topic as string) || "";
+      text = newTopic
+        ? `${senderName} set the room description`
+        : `${senderName} cleared the room description`;
+    } else if (eventType === "m.room.pinned_events") {
+      text = `${senderName} pinned a message`;
     } else {
       return null;
     }
@@ -1027,7 +1199,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     if (!raw?.content) return null;
 
     // Handle state events as system messages
-    const stateEventTypes = ["m.room.member", "m.room.name", "m.room.power_levels"];
+    const stateEventTypes = ["m.room.member", "m.room.name", "m.room.power_levels", "m.room.avatar", "m.room.topic", "m.room.pinned_events"];
     if (stateEventTypes.includes(raw.type as string)) {
       return buildSystemMessage(raw, roomId);
     }
@@ -1055,6 +1227,33 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         status: MessageStatus.sent,
         type: MessageType.system,
         callInfo: { callType: isVideo ? "video" : "voice", missed: reason === "invite_timeout", duration: Math.round(durationMs / 1000) },
+      };
+    }
+
+    // Handle poll start events (MSC3381)
+    if (raw.type === "org.matrix.msc3381.poll.start") {
+      const pollContent = raw.content as Record<string, unknown>;
+      const pollStart = (pollContent["org.matrix.msc3381.poll.start"] ?? pollContent) as Record<string, unknown>;
+      const question = ((pollStart.question as Record<string, unknown>)?.body as string) ?? (pollStart.question as string) ?? "";
+      const answers = (pollStart.answers as Array<Record<string, unknown>>) ?? [];
+      const options = answers.map((a) => ({
+        id: (a.id as string) ?? "",
+        text: (a.body as string) ?? ((a["org.matrix.msc1767.text"] as string) ?? ""),
+      }));
+      const pollInfo: PollInfo = {
+        question,
+        options,
+        votes: {},
+      };
+      return {
+        id: raw.event_id as string,
+        roomId,
+        senderId: matrixIdToAddress(raw.sender as string),
+        content: question,
+        timestamp: (raw.origin_server_ts as number) ?? 0,
+        status: MessageStatus.sent,
+        type: MessageType.poll,
+        pollInfo,
       };
     }
 
@@ -1148,17 +1347,23 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     // Ensure room crypto is initialized before parsing
     const roomCrypto = await ensureRoomCrypto(roomId);
 
-    // Separate messages, reactions, and edits
+    // Separate messages, reactions, edits, and poll events
     const messageEvents: unknown[] = [];
     const reactionEvents: Record<string, unknown>[] = [];
     const editEvents: Record<string, unknown>[] = [];
+    const pollResponseEvents: Record<string, unknown>[] = [];
+    const pollEndEvents: Record<string, unknown>[] = [];
 
-    const stateEventTypes = ["m.room.member", "m.room.name", "m.room.power_levels"];
+    const stateEventTypes = ["m.room.member", "m.room.name", "m.room.power_levels", "m.room.avatar", "m.room.topic", "m.room.pinned_events"];
     for (const event of timelineEvents) {
       const raw = getRawEvent(event);
       if (!raw) continue;
       if (raw.type === "m.reaction" && raw.content) {
         reactionEvents.push(raw);
+      } else if (raw.type === "org.matrix.msc3381.poll.response" && raw.content) {
+        pollResponseEvents.push(raw);
+      } else if (raw.type === "org.matrix.msc3381.poll.end" && raw.content) {
+        pollEndEvents.push(raw);
       } else if (raw.type === "m.room.message" && raw.content) {
         const rel = (raw.content as Record<string, unknown>)["m.relates_to"] as Record<string, unknown> | undefined;
         if (rel?.rel_type === "m.replace" && rel?.event_id) {
@@ -1238,6 +1443,45 @@ export const useChatStore = defineStore(NAMESPACE, () => {
           rd.myEventId = raw.event_id as string;
         }
       }
+    }
+
+    // Apply poll responses (votes) to poll messages
+    for (const raw of pollResponseEvents) {
+      const content = raw.content as Record<string, unknown>;
+      const relatesTo = content["m.relates_to"] as Record<string, unknown> | undefined;
+      const pollEventId = relatesTo?.event_id as string;
+      if (!pollEventId) continue;
+      const pollMsg = msgMap.get(pollEventId);
+      if (!pollMsg?.pollInfo) continue;
+      const responseContent = (content["org.matrix.msc3381.poll.response"] ?? content) as Record<string, unknown>;
+      const answers = (responseContent.answers as string[]) ?? [];
+      const voterId = matrixIdToAddress(raw.sender as string);
+      // Remove previous vote from this voter
+      for (const optId of Object.keys(pollMsg.pollInfo.votes)) {
+        pollMsg.pollInfo.votes[optId] = pollMsg.pollInfo.votes[optId].filter(v => v !== voterId);
+      }
+      // Add new vote
+      if (answers.length > 0) {
+        const optionId = answers[0];
+        if (!pollMsg.pollInfo.votes[optionId]) pollMsg.pollInfo.votes[optionId] = [];
+        pollMsg.pollInfo.votes[optionId].push(voterId);
+      }
+      // Track own vote
+      if (matrixService.isMe(raw.sender as string) && answers.length > 0) {
+        pollMsg.pollInfo.myVote = answers[0];
+      }
+    }
+
+    // Apply poll end events
+    for (const raw of pollEndEvents) {
+      const content = raw.content as Record<string, unknown>;
+      const relatesTo = content["m.relates_to"] as Record<string, unknown> | undefined;
+      const pollEventId = relatesTo?.event_id as string;
+      if (!pollEventId) continue;
+      const pollMsg = msgMap.get(pollEventId);
+      if (!pollMsg?.pollInfo) continue;
+      pollMsg.pollInfo.ended = true;
+      pollMsg.pollInfo.endedBy = matrixIdToAddress(raw.sender as string);
     }
 
     // Resolve reply references (fill in sender/content/type from parsed messages)
@@ -1356,6 +1600,11 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       applyExistingReceipts(matrixRoom, timelineEvents, msgs, matrixService.getUserId());
 
       setMessages(roomId, msgs);
+
+      // Load server-synced pinned messages after messages are available
+      if (roomId === activeRoomId.value) {
+        await loadPinnedMessages(roomId);
+      }
 
       // Fire-and-forget: cache messages to IndexedDB
       cacheMessages(roomId, msgs).catch(() => {});
@@ -1537,9 +1786,20 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         return;
       }
 
-      // Handle state events (membership, room name, power levels) as system messages
-      const liveStateEventTypes = ["m.room.member", "m.room.name", "m.room.power_levels"];
+      // Handle state events (membership, room name, power levels, avatar, topic, pinned) as system messages
+      const liveStateEventTypes = ["m.room.member", "m.room.name", "m.room.power_levels", "m.room.avatar", "m.room.topic", "m.room.pinned_events"];
       if (liveStateEventTypes.includes(raw.type as string)) {
+        // Update local room topic when topic state changes
+        if (raw.type === "m.room.topic") {
+          const room = rooms.value.find(r => r.id === roomId);
+          if (room) {
+            room.topic = ((raw.content as Record<string, unknown>).topic as string) || "";
+          }
+        }
+        // Reload pinned messages when pinned events change
+        if (raw.type === "m.room.pinned_events" && roomId === activeRoomId.value) {
+          loadPinnedMessages(roomId);
+        }
         const sysMsg = buildSystemMessage(raw, roomId);
         if (sysMsg) {
           addMessage(roomId, sysMsg);
@@ -1574,6 +1834,78 @@ export const useChatStore = defineStore(NAMESPACE, () => {
           callInfo: { callType: isVideo ? "video" : "voice", missed: reason === "invite_timeout", duration: Math.round(durationMs / 1000) },
         };
         addMessage(roomId, sysMsg);
+        return;
+      }
+
+      // Handle poll start events (MSC3381)
+      if (raw.type === "org.matrix.msc3381.poll.start") {
+        const matrixService = getMatrixClientService();
+        const myUserId = matrixService.getUserId();
+        if (myUserId && raw.sender === myUserId) return; // skip own events
+        const pollContent = raw.content as Record<string, unknown>;
+        const pollStart = (pollContent["org.matrix.msc3381.poll.start"] ?? pollContent) as Record<string, unknown>;
+        const question = ((pollStart.question as Record<string, unknown>)?.body as string) ?? (pollStart.question as string) ?? "";
+        const answers = (pollStart.answers as Array<Record<string, unknown>>) ?? [];
+        const options = answers.map((a) => ({
+          id: (a.id as string) ?? "",
+          text: (a.body as string) ?? ((a["org.matrix.msc1767.text"] as string) ?? ""),
+        }));
+        const pollInfo: PollInfo = { question, options, votes: {} };
+        addMessage(roomId, {
+          id: raw.event_id as string,
+          roomId,
+          senderId: matrixIdToAddress(raw.sender as string),
+          content: question,
+          timestamp: (raw.origin_server_ts as number) ?? Date.now(),
+          status: MessageStatus.sent,
+          type: MessageType.poll,
+          pollInfo,
+        });
+        return;
+      }
+
+      // Handle poll response events — update vote on existing poll message
+      if (raw.type === "org.matrix.msc3381.poll.response") {
+        const content = raw.content as Record<string, unknown>;
+        const relatesTo = content["m.relates_to"] as Record<string, unknown> | undefined;
+        const pollEventId = relatesTo?.event_id as string;
+        if (!pollEventId) return;
+        const roomMsgs = messages.value[roomId];
+        const pollMsg = roomMsgs?.find(m => m.id === pollEventId);
+        if (!pollMsg?.pollInfo) return;
+        const responseContent = (content["org.matrix.msc3381.poll.response"] ?? content) as Record<string, unknown>;
+        const answers = (responseContent.answers as string[]) ?? [];
+        const voterId = matrixIdToAddress(raw.sender as string);
+        // Remove previous vote
+        for (const optId of Object.keys(pollMsg.pollInfo.votes)) {
+          pollMsg.pollInfo.votes[optId] = pollMsg.pollInfo.votes[optId].filter(v => v !== voterId);
+        }
+        // Add new vote
+        if (answers.length > 0) {
+          const optionId = answers[0];
+          if (!pollMsg.pollInfo.votes[optionId]) pollMsg.pollInfo.votes[optionId] = [];
+          pollMsg.pollInfo.votes[optionId].push(voterId);
+        }
+        const matrixService = getMatrixClientService();
+        if (matrixService.isMe(raw.sender as string) && answers.length > 0) {
+          pollMsg.pollInfo.myVote = answers[0];
+        }
+        triggerRef(messages);
+        return;
+      }
+
+      // Handle poll end events
+      if (raw.type === "org.matrix.msc3381.poll.end") {
+        const content = raw.content as Record<string, unknown>;
+        const relatesTo = content["m.relates_to"] as Record<string, unknown> | undefined;
+        const pollEventId = relatesTo?.event_id as string;
+        if (!pollEventId) return;
+        const roomMsgs = messages.value[roomId];
+        const pollMsg = roomMsgs?.find(m => m.id === pollEventId);
+        if (!pollMsg?.pollInfo) return;
+        pollMsg.pollInfo.ended = true;
+        pollMsg.pollInfo.endedBy = matrixIdToAddress(raw.sender as string);
+        triggerRef(messages);
         return;
       }
 
@@ -1944,11 +2276,15 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     handleRedactionEvent,
     handleTimelineEvent,
     inviteMember,
+    banMember,
+    getBannedMembers,
+    isMemberMuted,
     kickMember,
     leaveGroup,
     loadCachedMessages,
     loadCachedRooms,
     loadAllMessages,
+    loadPinnedMessages,
     loadMoreMessages,
     loadRoomMessages,
     markRoomAsRead,
@@ -1976,10 +2312,14 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     inviteCount,
     setActiveRoom,
     setHelpers,
+    muteMember,
     setMemberPowerLevel,
     setMessages,
+    setRoomAvatar,
+    setRoomTopic,
     setTypingUsers,
     sortedRooms,
+    unbanMember,
     toggleMuteRoom,
     togglePinRoom,
     toggleSelection,

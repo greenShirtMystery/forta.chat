@@ -145,6 +145,7 @@ export const ru: Record<TranslationKey, string> = {
   "contextMenu.edit": "Редактировать",
   "contextMenu.select": "Выбрать",
   "contextMenu.pin": "Закрепить",
+  "contextMenu.unpin": "Открепить",
   "contextMenu.delete": "Удалить",
   "contextMenu.moreReactions": "Больше реакций",
 
@@ -160,6 +161,7 @@ export const ru: Record<TranslationKey, string> = {
   // ── Attachment panel ──
   "attachment.photoOrVideo": "Фото или видео",
   "attachment.file": "Файл",
+  "attachment.poll": "Опрос",
 
   // ── Voice recorder ──
   "voice.slideToCancel": "< Сдвиньте для отмены",
@@ -242,6 +244,24 @@ export const ru: Record<TranslationKey, string> = {
   "info.removeAdmin": "Снять администратора",
   "info.makeAdmin": "Назначить администратором",
   "info.removeFromGroup": "Исключить из группы",
+  "info.muteInChat": "Заглушить в чате",
+  "info.unmute": "Снять заглушку",
+  "info.banFromGroup": "Заблокировать в группе",
+  "info.unban": "Разблокировать",
+  "info.banned": "Заблокированные ({count})",
+  "info.muted": "заглушён",
+  "info.editDescription": "Изменить описание",
+  "info.addDescription": "Добавить описание",
+  "info.changePhoto": "Изменить фото",
+
+  // ── Polls ──
+  "poll.createPoll": "Создать опрос",
+  "poll.askQuestion": "Задайте вопрос...",
+  "poll.option": "Вариант {n}",
+  "poll.addOption": "Добавить вариант",
+  "poll.endPoll": "Завершить опрос",
+  "poll.finalResults": "Итоговые результаты",
+  "poll.votes": "{count} голос(ов)",
 
   // ── Video calls ──
   "call.voiceCall": "Голосовой звонок",

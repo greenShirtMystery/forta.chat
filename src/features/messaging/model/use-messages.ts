@@ -614,18 +614,137 @@ export function useMessages() {
     }
   };
 
+  /** Send a poll (MSC3381 org.matrix.msc3381.poll.start) */
+  const sendPoll = async (question: string, options: string[]) => {
+    const chatStore = useChatStore();
+    const roomId = chatStore.activeRoomId;
+    if (!roomId) return;
+    const matrixService = getMatrixClientService();
+
+    const answers = options.map((text, i) => ({
+      id: `opt-${i}`,
+      "org.matrix.msc1767.text": text,
+      body: text,
+    }));
+
+    const content = {
+      "org.matrix.msc3381.poll.start": {
+        kind: "org.matrix.msc3381.poll.disclosed",
+        max_selections: 1,
+        question: { body: question, "org.matrix.msc1767.text": question },
+        answers,
+      },
+      "org.matrix.msc1767.text": `Poll: ${question}`,
+    };
+
+    try {
+      const eventId = await matrixService.sendPollStart(roomId, content);
+      // Add optimistic poll message
+      const authStore = useAuthStore();
+      const pollInfo: import("@/entities/chat").PollInfo = {
+        question,
+        options: answers.map(a => ({ id: a.id, text: a.body })),
+        votes: {},
+      };
+      chatStore.addMessage(roomId, {
+        id: eventId,
+        roomId,
+        senderId: authStore.address ?? "",
+        content: question,
+        timestamp: Date.now(),
+        status: MessageStatus.sent,
+        type: MessageType.poll,
+        pollInfo,
+      });
+    } catch (e) {
+      console.error("Failed to send poll:", e);
+    }
+  };
+
+  /** Vote on a poll */
+  const votePoll = async (pollEventId: string, optionId: string) => {
+    const chatStore = useChatStore();
+    const roomId = chatStore.activeRoomId;
+    if (!roomId) return;
+    const matrixService = getMatrixClientService();
+
+    const content = {
+      "m.relates_to": {
+        rel_type: "m.reference",
+        event_id: pollEventId,
+      },
+      "org.matrix.msc3381.poll.response": {
+        answers: [optionId],
+      },
+    };
+
+    try {
+      await matrixService.sendPollResponse(roomId, content);
+      // Optimistic: update vote locally
+      const roomMsgs = chatStore.messages[roomId];
+      const pollMsg = roomMsgs?.find(m => m.id === pollEventId);
+      if (pollMsg?.pollInfo) {
+        const authStore = useAuthStore();
+        const myAddr = authStore.address ?? "";
+        // Remove old vote
+        for (const key of Object.keys(pollMsg.pollInfo.votes)) {
+          pollMsg.pollInfo.votes[key] = pollMsg.pollInfo.votes[key].filter(v => v !== myAddr);
+        }
+        // Add new vote
+        if (!pollMsg.pollInfo.votes[optionId]) pollMsg.pollInfo.votes[optionId] = [];
+        pollMsg.pollInfo.votes[optionId].push(myAddr);
+        pollMsg.pollInfo.myVote = optionId;
+      }
+    } catch (e) {
+      console.error("Failed to vote on poll:", e);
+    }
+  };
+
+  /** End a poll */
+  const endPoll = async (pollEventId: string) => {
+    const chatStore = useChatStore();
+    const roomId = chatStore.activeRoomId;
+    if (!roomId) return;
+    const matrixService = getMatrixClientService();
+
+    const content = {
+      "m.relates_to": {
+        rel_type: "m.reference",
+        event_id: pollEventId,
+      },
+      "org.matrix.msc1767.text": "Poll ended",
+    };
+
+    try {
+      await matrixService.sendPollEnd(roomId, content);
+      // Optimistic: mark as ended
+      const roomMsgs = chatStore.messages[roomId];
+      const pollMsg = roomMsgs?.find(m => m.id === pollEventId);
+      if (pollMsg?.pollInfo) {
+        const authStore = useAuthStore();
+        pollMsg.pollInfo.ended = true;
+        pollMsg.pollInfo.endedBy = authStore.address ?? "";
+      }
+    } catch (e) {
+      console.error("Failed to end poll:", e);
+    }
+  };
+
   return {
     deleteMessage,
     drainOfflineQueue,
     editMessage,
+    endPoll,
     forwardMessage,
     loadMessages,
     sendAudio,
     sendFile,
     sendImage,
     sendMessage,
+    sendPoll,
     sendReply,
     setTyping,
     toggleReaction,
+    votePoll,
   };
 }

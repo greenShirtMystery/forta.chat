@@ -9,6 +9,8 @@ export interface ChatRoom {
   updatedAt: number;
   /** Room membership: "join" | "invite". Invited rooms need explicit join before interaction. */
   membership?: "join" | "invite";
+  /** Room topic / description (from m.room.topic state event) */
+  topic?: string;
 }
 
 /** Metadata for file/image/video/audio messages */
@@ -67,6 +69,8 @@ export interface Message {
     /** Call duration in seconds (0 or absent for missed/unanswered) */
     duration?: number;
   };
+  /** Poll metadata — present when type === poll */
+  pollInfo?: PollInfo;
 }
 
 export enum MessageStatus {
@@ -83,5 +87,19 @@ export enum MessageType {
   file = "file",
   video = "video",
   audio = "audio",
-  system = "system"
+  system = "system",
+  poll = "poll",
+}
+
+export interface PollInfo {
+  question: string;
+  options: Array<{ id: string; text: string }>;
+  /** optionId → list of voter addresses */
+  votes: Record<string, string[]>;
+  /** The option ID the current user voted for */
+  myVote?: string;
+  /** Whether the poll has been ended */
+  ended?: boolean;
+  /** Address of the user who ended the poll */
+  endedBy?: string;
 }

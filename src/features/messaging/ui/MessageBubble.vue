@@ -6,6 +6,7 @@ import { stripMentionAddresses } from "@/shared/lib/message-format";
 import { useFileDownload } from "../model/use-file-download";
 import MessageContent from "./MessageContent.vue";
 import MessageStatusIcon from "./MessageStatusIcon.vue";
+import PollCard from "./PollCard.vue";
 import ReactionRow from "./ReactionRow.vue";
 import VoiceMessage from "./VoiceMessage.vue";
 import { ref, onMounted } from "vue";
@@ -34,6 +35,8 @@ const emit = defineEmits<{
   scrollToReply: [messageId: string];
   toggleReaction: [emoji: string, messageId: string];
   addReaction: [message: Message];
+  pollVote: [messageId: string, optionId: string];
+  pollEnd: [messageId: string];
 }>();
 
 const handleToggleReaction = (emoji: string) => {
@@ -491,6 +494,33 @@ const replyPreviewText = computed(() => {
           <MessageStatusIcon v-if="props.isOwn" :status="msgStatus" />
         </div>
         <!-- Reactions row -->
+        <ReactionRow v-if="message.reactions && Object.keys(message.reactions).length" :reactions="message.reactions" :is-own="props.isOwn" @toggle="handleToggleReaction" @add-reaction="handleAddReaction" />
+      </div>
+
+      <!-- Poll message -->
+      <div
+        v-else-if="message.type === MessageType.poll && message.pollInfo"
+        class="rounded-bubble px-3 py-2"
+        :class="[tailClass, props.isOwn ? 'bg-chat-bubble-own text-text-on-bg-ac-color' : 'bg-chat-bubble-other text-text-color']"
+      >
+        <!-- Sender name in groups -->
+        <div
+          v-if="props.isGroup && !props.isOwn && props.isFirstInGroup"
+          class="mb-0.5 text-sm font-semibold"
+          :style="{ color: senderColor }"
+        >
+          {{ chatStore.getDisplayName(message.senderId) }}
+        </div>
+        <PollCard
+          :message="message"
+          :is-own="props.isOwn"
+          @vote="(optionId: string) => emit('pollVote', message.id, optionId)"
+          @end="emit('pollEnd', message.id)"
+        />
+        <div v-if="themeStore.showTimestamps" class="mt-1 flex items-center justify-end gap-1" :class="props.isOwn ? 'text-white/60' : 'text-text-on-main-bg-color'">
+          <span class="text-[10px]">{{ time }}</span>
+          <MessageStatusIcon v-if="props.isOwn" :status="msgStatus" />
+        </div>
         <ReactionRow v-if="message.reactions && Object.keys(message.reactions).length" :reactions="message.reactions" :is-own="props.isOwn" @toggle="handleToggleReaction" @add-reaction="handleAddReaction" />
       </div>
 

@@ -5,6 +5,7 @@ import { useAuthStore } from "@/entities/auth";
 import { hexEncode, hexDecode } from "@/shared/lib/matrix/functions";
 import { MATRIX_SERVER } from "@/shared/config";
 import { useContacts } from "@/features/contacts/model/use-contacts";
+import { matrixIdToAddress } from "@/entities/chat/lib/chat-helpers";
 
 interface Props {
   show: boolean;
@@ -54,6 +55,47 @@ const isMemberAdmin = (hexId: string): boolean => getMemberPowerLevel(hexId) >= 
 
 // My hex ID for self-check (room.members are hex-encoded)
 const myHexId = computed(() => hexEncode(authStore.address ?? "").toLowerCase());
+
+// ── Avatar edit ──
+const avatarInputRef = ref<HTMLInputElement | null>(null);
+const uploadingAvatar = ref(false);
+
+const handleAvatarClick = () => {
+  if (!isAdmin.value || !room.value?.isGroup) return;
+  avatarInputRef.value?.click();
+};
+
+const handleAvatarChange = async (e: Event) => {
+  const file = (e.target as HTMLInputElement).files?.[0];
+  if (!file || !room.value) return;
+  uploadingAvatar.value = true;
+  await chatStore.setRoomAvatar(room.value.id, file);
+  uploadingAvatar.value = false;
+  // Reset input so the same file can be selected again
+  if (avatarInputRef.value) avatarInputRef.value.value = "";
+};
+
+// ── Topic / description ──
+const editingTopic = ref(false);
+const topicDraft = ref("");
+const savingTopic = ref(false);
+
+const startEditTopic = () => {
+  topicDraft.value = room.value?.topic ?? "";
+  editingTopic.value = true;
+};
+
+const cancelEditTopic = () => {
+  editingTopic.value = false;
+};
+
+const saveEditTopic = async () => {
+  if (!room.value || savingTopic.value) return;
+  savingTopic.value = true;
+  await chatStore.setRoomTopic(room.value.id, topicDraft.value.trim());
+  savingTopic.value = false;
+  editingTopic.value = false;
+};
 
 // Add member overlay
 const showAddMember = ref(false);
@@ -116,9 +158,52 @@ const handleToggleAdmin = async () => {
   memberAction.value.show = false;
 };
 
+// ── Ban / Mute ──
+const banningMember = ref(false);
+const mutingMember = ref(false);
+
+const handleBanMember = async () => {
+  if (!room.value || banningMember.value) return;
+  banningMember.value = true;
+  const rawAddr = hexDecode(memberAction.value.hexId);
+  await chatStore.banMember(room.value.id, rawAddr);
+  banningMember.value = false;
+  memberAction.value.show = false;
+};
+
+const handleToggleMute = async () => {
+  if (!room.value || mutingMember.value) return;
+  mutingMember.value = true;
+  const rawAddr = hexDecode(memberAction.value.hexId);
+  const isMuted = chatStore.isMemberMuted(room.value.id, memberAction.value.hexId);
+  await chatStore.muteMember(room.value.id, rawAddr, !isMuted);
+  mutingMember.value = false;
+  memberAction.value.show = false;
+};
+
+const isActionMemberMuted = computed(() => {
+  if (!room.value || !memberAction.value.hexId) return false;
+  return chatStore.isMemberMuted(room.value.id, memberAction.value.hexId);
+});
+
+// Banned members
+const bannedMembers = computed(() => {
+  if (!room.value) return [];
+  return chatStore.getBannedMembers(room.value.id);
+});
+
+const unbanningUser = ref<string | null>(null);
+
+const handleUnban = async (userId: string) => {
+  if (!room.value || unbanningUser.value) return;
+  unbanningUser.value = userId;
+  await chatStore.unbanMember(room.value.id, userId);
+  unbanningUser.value = null;
+};
+
 const memberMenuStyle = computed(() => {
   const x = Math.min(memberAction.value.x, (window?.innerWidth ?? 800) - 200);
-  const y = Math.min(memberAction.value.y, (window?.innerHeight ?? 600) - 150);
+  const y = Math.min(memberAction.value.y, (window?.innerHeight ?? 600) - 250);
   return { left: `${x}px`, top: `${y}px` };
 });
 
@@ -173,17 +258,77 @@ const handleDeleteChat = () => {
           <div class="flex-1 overflow-y-auto">
             <!-- Avatar + Name -->
             <div class="flex flex-col items-center gap-3 p-6">
-              <UserAvatar
-                v-if="room.avatar?.startsWith('__pocketnet__:')"
-                :address="room.avatar.replace('__pocketnet__:', '')"
-                size="xl"
-              />
-              <Avatar v-else :src="room.avatar" :name="room.name" size="xl" />
+              <!-- Avatar with edit overlay for admin groups -->
+              <div
+                class="group relative"
+                :class="isAdmin && room.isGroup ? 'cursor-pointer' : ''"
+                @click="handleAvatarClick"
+              >
+                <UserAvatar
+                  v-if="room.avatar?.startsWith('__pocketnet__:')"
+                  :address="room.avatar.replace('__pocketnet__:', '')"
+                  size="xl"
+                />
+                <Avatar v-else :src="room.avatar" :name="room.name" size="xl" />
+                <!-- Camera overlay (admin + group only) -->
+                <div
+                  v-if="isAdmin && room.isGroup"
+                  class="absolute inset-0 flex items-center justify-center rounded-full bg-black/40 opacity-0 transition-opacity group-hover:opacity-100"
+                >
+                  <div v-if="uploadingAvatar" class="h-6 w-6 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                  <svg v-else width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
+                    <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+                    <circle cx="12" cy="13" r="4" />
+                  </svg>
+                </div>
+                <input
+                  ref="avatarInputRef"
+                  type="file"
+                  accept="image/*"
+                  class="hidden"
+                  @change="handleAvatarChange"
+                />
+              </div>
               <div class="text-center">
                 <h2 class="text-lg font-semibold text-text-color">{{ room.name }}</h2>
                 <p class="text-sm text-text-on-main-bg-color">
                   {{ room.isGroup ? `${room.members.length} members` : "Direct message" }}
                 </p>
+
+                <!-- Topic / Description -->
+                <template v-if="room.isGroup">
+                  <div v-if="!editingTopic" class="mt-2">
+                    <p v-if="room.topic" class="text-xs text-text-on-main-bg-color">{{ room.topic }}</p>
+                    <button
+                      v-if="isAdmin"
+                      class="mt-1 text-xs text-color-bg-ac hover:underline"
+                      @click="startEditTopic"
+                    >
+                      {{ room.topic ? "Edit description" : "Add description" }}
+                    </button>
+                  </div>
+                  <div v-else class="mt-2 w-full text-left">
+                    <textarea
+                      v-model="topicDraft"
+                      class="w-full rounded-lg bg-chat-input-bg px-3 py-2 text-xs text-text-color outline-none placeholder:text-neutral-grad-2"
+                      placeholder="Room description..."
+                      rows="3"
+                      maxlength="500"
+                    />
+                    <div class="mt-1 flex justify-end gap-2">
+                      <button class="rounded px-2 py-1 text-xs text-text-on-main-bg-color hover:bg-neutral-grad-0" @click="cancelEditTopic">
+                        Cancel
+                      </button>
+                      <button
+                        class="rounded bg-color-bg-ac px-2 py-1 text-xs text-white"
+                        :disabled="savingTopic"
+                        @click="saveEditTopic"
+                      >
+                        {{ savingTopic ? "Saving..." : "Save" }}
+                      </button>
+                    </div>
+                  </div>
+                </template>
               </div>
             </div>
 
@@ -301,11 +446,43 @@ const handleDeleteChat = () => {
                     {{ chatStore.getDisplayName(member) }}
                   </span>
                   <span
+                    v-if="chatStore.isMemberMuted(room.id, member)"
+                    class="shrink-0 rounded bg-neutral-grad-2/30 px-1.5 py-0.5 text-[10px] font-medium text-text-on-main-bg-color"
+                  >
+                    muted
+                  </span>
+                  <span
                     v-if="isMemberAdmin(member)"
                     class="shrink-0 rounded bg-color-bg-ac/15 px-1.5 py-0.5 text-[10px] font-medium text-color-bg-ac"
                   >
                     admin
                   </span>
+                </div>
+              </div>
+
+              <!-- Banned members (admin only) -->
+              <div v-if="isAdmin && bannedMembers.length > 0" class="mt-3">
+                <div class="mb-2 text-xs font-medium uppercase text-text-on-main-bg-color">
+                  Banned ({{ bannedMembers.length }})
+                </div>
+                <div class="flex flex-col gap-1">
+                  <div
+                    v-for="banned in bannedMembers"
+                    :key="banned.userId"
+                    class="flex items-center gap-3 rounded-lg px-2 py-2"
+                  >
+                    <UserAvatar :address="matrixIdToAddress(banned.userId)" size="sm" />
+                    <span class="min-w-0 flex-1 truncate text-sm text-text-on-main-bg-color line-through">
+                      {{ banned.name }}
+                    </span>
+                    <button
+                      class="shrink-0 rounded px-2 py-0.5 text-xs text-color-bg-ac hover:bg-neutral-grad-0"
+                      :disabled="unbanningUser === banned.userId"
+                      @click="handleUnban(banned.userId)"
+                    >
+                      {{ unbanningUser === banned.userId ? "..." : "Unban" }}
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -415,6 +592,22 @@ const handleDeleteChat = () => {
               </svg>
               {{ isMemberAdmin(memberAction.hexId) ? "Remove admin" : "Make admin" }}
             </button>
+            <!-- Mute / Unmute -->
+            <button
+              class="flex w-full items-center gap-3 px-4 py-2.5 text-sm text-text-color hover:bg-neutral-grad-0"
+              :disabled="mutingMember"
+              @click="handleToggleMute"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path v-if="isActionMemberMuted" d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                <path v-if="isActionMemberMuted" d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                <line v-if="!isActionMemberMuted" x1="1" y1="1" x2="23" y2="23" />
+                <path v-if="!isActionMemberMuted" d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
+                <path v-if="!isActionMemberMuted" d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.36 2.18" />
+              </svg>
+              {{ isActionMemberMuted ? "Unmute" : "Mute in chat" }}
+            </button>
+            <!-- Kick -->
             <button
               class="flex w-full items-center gap-3 px-4 py-2.5 text-sm text-color-bad hover:bg-neutral-grad-0"
               :disabled="kickingMember"
@@ -426,6 +619,18 @@ const handleDeleteChat = () => {
                 <line x1="18" y1="8" x2="23" y2="13" /><line x1="23" y1="8" x2="18" y2="13" />
               </svg>
               Remove from group
+            </button>
+            <!-- Ban -->
+            <button
+              class="flex w-full items-center gap-3 px-4 py-2.5 text-sm text-color-bad hover:bg-neutral-grad-0"
+              :disabled="banningMember"
+              @click="handleBanMember"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10" />
+                <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
+              </svg>
+              Ban from group
             </button>
           </div>
         </div>

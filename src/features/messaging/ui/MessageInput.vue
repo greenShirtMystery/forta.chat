@@ -9,6 +9,7 @@ import { useMediaUpload } from "../model/use-media-upload";
 import EmojiPicker from "./EmojiPicker.vue";
 import AttachmentPanel from "./AttachmentPanel.vue";
 import MediaPreview from "./MediaPreview.vue";
+import PollCreator from "./PollCreator.vue";
 import VoiceRecorder from "./VoiceRecorder.vue";
 import { useVoiceRecorder } from "../model/use-voice-recorder";
 import { useMentionAutocomplete } from "../model/use-mention-autocomplete";
@@ -16,7 +17,7 @@ import MentionAutocomplete from "./MentionAutocomplete.vue";
 
 const chatStore = useChatStore();
 const themeStore = useThemeStore();
-const { sendMessage, sendFile, sendImage, sendAudio, sendReply, editMessage, setTyping } = useMessages();
+const { sendMessage, sendFile, sendImage, sendAudio, sendReply, editMessage, setTyping, sendPoll } = useMessages();
 const mediaUpload = useMediaUpload();
 const voiceRecorder = useVoiceRecorder();
 
@@ -121,6 +122,12 @@ const handleInput = () => {
 };
 
 const showAttachmentPanel = ref(false);
+const showPollCreator = ref(false);
+
+const handleCreatePoll = (question: string, options: string[]) => {
+  showPollCreator.value = false;
+  sendPoll(question, options);
+};
 const attachBtnRef = ref<HTMLElement>();
 const attachmentPanelPos = ref({ x: 0, y: 0 });
 const photoInputRef = ref<HTMLInputElement>();
@@ -442,6 +449,14 @@ const insertEmoji = (emoji: string) => {
       @close="showAttachmentPanel = false"
       @select-photo="openPhotoPicker"
       @select-file="openFilePicker"
+      @select-poll="showPollCreator = true"
+    />
+
+    <!-- Poll creator -->
+    <PollCreator
+      v-if="showPollCreator"
+      @create="handleCreatePoll"
+      @close="showPollCreator = false"
     />
 
     <MediaPreview

@@ -20,6 +20,11 @@ const { toast } = useToast();
 const { isOnline, isSlow } = useConnectivity();
 const { t } = useI18n();
 
+const isAdmin = computed(() => {
+  if (!chatStore.activeRoom) return false;
+  return chatStore.getRoomPowerLevels(chatStore.activeRoom.id).myLevel >= 50;
+});
+
 const showForwardPicker = ref(false);
 const showSearch = ref(false);
 const showInfoPanel = ref(false);
@@ -317,7 +322,7 @@ onUnmounted(() => {
             @update:query="handleSearchQuery"
           />
         </transition>
-        <PinnedBar @scroll-to="handleScrollToMessage" />
+        <PinnedBar :is-admin="isAdmin" @scroll-to="handleScrollToMessage" />
         <MessageList ref="messageListRef" />
         <transition name="bar-slide-up" mode="out-in">
           <SelectionBar

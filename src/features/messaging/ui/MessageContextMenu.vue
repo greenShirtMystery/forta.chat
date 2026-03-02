@@ -11,6 +11,8 @@ interface Props {
   y: number;
   message: Message | null;
   isOwn: boolean;
+  isAdmin?: boolean;
+  isPinned?: boolean;
 }
 
 const props = defineProps<Props>();
@@ -45,7 +47,13 @@ const menuItems = computed<ContextMenuItem[]>(() => {
     items.push({ label: "Edit", icon: ICONS.edit, action: "edit" });
   }
   items.push({ label: "Select", icon: ICONS.select, action: "select" });
-  items.push({ label: "Pin", icon: ICONS.pin, action: "pin" });
+  if (props.isAdmin) {
+    items.push({
+      label: props.isPinned ? "Unpin" : "Pin",
+      icon: ICONS.pin,
+      action: props.isPinned ? "unpin" : "pin",
+    });
+  }
   if (props.isOwn) {
     items.push({ label: "Delete", icon: ICONS.delete, action: "delete", danger: true });
   }

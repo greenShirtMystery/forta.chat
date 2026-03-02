@@ -1,6 +1,11 @@
 <script setup lang="ts">
 import { useChatStore } from "@/entities/chat";
 
+interface Props {
+  isAdmin?: boolean;
+}
+
+const props = defineProps<Props>();
 const chatStore = useChatStore();
 const emit = defineEmits<{ scrollTo: [messageId: string] }>();
 
@@ -61,8 +66,9 @@ const handleUnpin = () => {
       </div>
     </button>
 
-    <!-- Unpin button -->
+    <!-- Unpin button (admin only) -->
     <button
+      v-if="props.isAdmin"
       class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-text-on-main-bg-color transition-colors hover:bg-neutral-grad-0"
       title="Unpin"
       @click="handleUnpin"

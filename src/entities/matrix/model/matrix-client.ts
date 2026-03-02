@@ -236,7 +236,7 @@ export class MatrixClientService {
       }
 
       // Pass state events (membership, room name, power levels) from anyone
-      const stateTypes = ["m.room.member", "m.room.name", "m.room.power_levels"];
+      const stateTypes = ["m.room.member", "m.room.name", "m.room.power_levels", "m.room.avatar", "m.room.topic", "m.room.pinned_events"];
       if (stateTypes.includes(msg.event.type)) {
         this.onTimeline?.(message, msg.event.room_id);
         return;
@@ -556,6 +556,45 @@ export class MatrixClientService {
   async kick(roomId: string, userId: string, reason?: string): Promise<void> {
     if (!this.client) throw new Error("Client not initialized");
     await this.client.kick(roomId, userId, reason);
+  }
+
+  /** Ban a user from a room (requires admin power level) */
+  async ban(roomId: string, userId: string, reason?: string): Promise<void> {
+    if (!this.client) throw new Error("Client not initialized");
+    await this.client.ban(roomId, userId, reason);
+  }
+
+  /** Unban a user from a room */
+  async unban(roomId: string, userId: string): Promise<void> {
+    if (!this.client) throw new Error("Client not initialized");
+    await this.client.unban(roomId, userId);
+  }
+
+  /** Set the room topic (m.room.topic state event) */
+  async setRoomTopic(roomId: string, topic: string): Promise<void> {
+    if (!this.client) throw new Error("Client not initialized");
+    await this.client.setRoomTopic(roomId, topic);
+  }
+
+  /** Send a poll start event (MSC3381) */
+  async sendPollStart(roomId: string, content: Record<string, unknown>): Promise<string> {
+    if (!this.client) throw new Error("Client not initialized");
+    const res = await this.client.sendEvent(roomId, "org.matrix.msc3381.poll.start", content);
+    return (res as { event_id: string }).event_id;
+  }
+
+  /** Send a poll response/vote event (MSC3381) */
+  async sendPollResponse(roomId: string, content: Record<string, unknown>): Promise<string> {
+    if (!this.client) throw new Error("Client not initialized");
+    const res = await this.client.sendEvent(roomId, "org.matrix.msc3381.poll.response", content);
+    return (res as { event_id: string }).event_id;
+  }
+
+  /** Send a poll end event (MSC3381) */
+  async sendPollEnd(roomId: string, content: Record<string, unknown>): Promise<string> {
+    if (!this.client) throw new Error("Client not initialized");
+    const res = await this.client.sendEvent(roomId, "org.matrix.msc3381.poll.end", content);
+    return (res as { event_id: string }).event_id;
   }
 
   /** Resolve a room alias to a room ID */

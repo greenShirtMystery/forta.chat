@@ -20,7 +20,7 @@ import "vue-virtual-scroller/dist/vue-virtual-scroller.css";
 const chatStore = useChatStore();
 const authStore = useAuthStore();
 const themeStore = useThemeStore();
-const { loadMessages, toggleReaction, deleteMessage } = useMessages();
+const { loadMessages, toggleReaction, deleteMessage, votePoll, endPoll } = useMessages();
 const { toast } = useToast();
 
 // Provide search query for MessageContent highlighting
@@ -81,10 +81,21 @@ const handleContextAction = (action: string, message: import("@/entities/chat").
       chatStore.forwardingMessages = true;
       break;
     case "pin":
-      chatStore.pinMessage?.(message.id);
+      chatStore.pinMessage(message.id);
+      break;
+    case "unpin":
+      chatStore.unpinMessage(message.id);
       break;
   }
   closeContextMenu();
+};
+
+const handlePollVote = (messageId: string, optionId: string) => {
+  votePoll(messageId, optionId);
+};
+
+const handlePollEnd = (messageId: string) => {
+  endPoll(messageId);
 };
 
 const handleContextReaction = (emoji: string, message: import("@/entities/chat").Message) => {
@@ -386,6 +397,15 @@ const getDateLabel = (
 
 const isGroup = computed(() => chatStore.activeRoom?.isGroup ?? false);
 
+const isAdmin = computed(() => {
+  if (!chatStore.activeRoom) return false;
+  return chatStore.getRoomPowerLevels(chatStore.activeRoom.id).myLevel >= 50;
+});
+
+const isMessagePinned = (messageId: string): boolean => {
+  return chatStore.pinnedMessages.some(p => p.id === messageId);
+};
+
 /** Typing indicator */
 const typingText = computed(() => {
   const roomId = chatStore.activeRoomId;
@@ -540,6 +560,8 @@ defineExpose({ scrollToMessage, setSearchQuery });
               @open-media="handleOpenMedia"
               @toggle-reaction="(emoji, messageId) => toggleReaction(messageId, emoji)"
               @add-reaction="handleOpenEmojiPicker"
+              @poll-vote="handlePollVote"
+              @poll-end="handlePollEnd"
             >
               <template #avatar>
                 <UserAvatar :address="item.message.senderId" size="sm" />
@@ -567,6 +589,8 @@ defineExpose({ scrollToMessage, setSearchQuery });
       :y="contextMenu.y"
       :message="contextMenu.message"
       :is-own="contextMenu.isOwn"
+      :is-admin="isAdmin"
+      :is-pinned="contextMenu.message ? isMessagePinned(contextMenu.message.id) : false"
       @close="closeContextMenu"
       @action="handleContextAction"
       @react="handleContextReaction"

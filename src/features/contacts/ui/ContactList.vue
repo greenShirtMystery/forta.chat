@@ -2,7 +2,8 @@
 import { ref } from "vue";
 import { useChatStore } from "@/entities/chat";
 import type { ChatRoom, Message } from "@/entities/chat";
-import { MessageType } from "@/entities/chat";
+import { MessageType, MessageStatus } from "@/entities/chat";
+import MessageStatusIcon from "@/features/messaging/ui/MessageStatusIcon.vue";
 import { useAuthStore } from "@/entities/auth";
 import { formatRelativeTime } from "@/shared/lib/format";
 import { stripMentionAddresses } from "@/shared/lib/message-format";
@@ -259,9 +260,13 @@ const getRoomLongPress = (room: ChatRoom) => {
               </span>
               <span
                 v-if="room.lastMessage"
-                class="shrink-0 text-xs"
+                class="flex shrink-0 items-center gap-0.5 text-xs"
                 :class="room.unreadCount > 0 ? 'text-color-bg-ac' : 'text-text-on-main-bg-color'"
               >
+                <MessageStatusIcon
+                  v-if="room.lastMessage.senderId === authStore.address && room.lastMessage.type !== MessageType.system"
+                  :status="room.lastMessage.status"
+                />
                 {{ formatRelativeTime(new Date(room.lastMessage.timestamp)) }}
               </span>
             </div>

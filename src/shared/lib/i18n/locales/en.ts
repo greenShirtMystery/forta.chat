@@ -143,6 +143,7 @@ export const en = {
   "contextMenu.edit": "Edit",
   "contextMenu.select": "Select",
   "contextMenu.pin": "Pin",
+  "contextMenu.unpin": "Unpin",
   "contextMenu.delete": "Delete",
   "contextMenu.moreReactions": "More reactions",
 
@@ -158,6 +159,7 @@ export const en = {
   // ── Attachment panel ──
   "attachment.photoOrVideo": "Photo or Video",
   "attachment.file": "File",
+  "attachment.poll": "Poll",
 
   // ── Voice recorder ──
   "voice.slideToCancel": "< Slide to cancel",
@@ -240,6 +242,24 @@ export const en = {
   "info.removeAdmin": "Remove admin",
   "info.makeAdmin": "Make admin",
   "info.removeFromGroup": "Remove from group",
+  "info.muteInChat": "Mute in chat",
+  "info.unmute": "Unmute",
+  "info.banFromGroup": "Ban from group",
+  "info.unban": "Unban",
+  "info.banned": "Banned ({count})",
+  "info.muted": "muted",
+  "info.editDescription": "Edit description",
+  "info.addDescription": "Add description",
+  "info.changePhoto": "Change photo",
+
+  // ── Polls ──
+  "poll.createPoll": "Create Poll",
+  "poll.askQuestion": "Ask a question...",
+  "poll.option": "Option {n}",
+  "poll.addOption": "Add option",
+  "poll.endPoll": "End poll",
+  "poll.finalResults": "Final results",
+  "poll.votes": "{count} vote(s)",
 
   // ── Video calls ──
   "call.voiceCall": "Voice call",
