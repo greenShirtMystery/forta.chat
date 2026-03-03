@@ -6,7 +6,7 @@ import SelectionBar from "@/features/messaging/ui/SelectionBar.vue";
 import ForwardPicker from "@/features/messaging/ui/ForwardPicker.vue";
 import ChatSearch from "@/features/messaging/ui/ChatSearch.vue";
 import { useToast } from "@/shared/lib/use-toast";
-import { ChatInfoPanel } from "@/features/chat-info";
+import { ChatInfoPanel, UserProfilePanel } from "@/features/chat-info";
 import PinnedBar from "@/features/messaging/ui/PinnedBar.vue";
 import { UserAvatar } from "@/entities/user";
 import { useConnectivity } from "@/shared/lib/connectivity";
@@ -36,6 +36,16 @@ const messageListRef = ref<InstanceType<typeof MessageList>>();
 const callService = useCallService();
 const { isAvailable: walletAvailable } = useWallet();
 const showDonateModal = ref(false);
+
+const profileAddress = ref("");
+const showUserProfile = ref(false);
+
+const openUserProfile = (address: string) => {
+  profileAddress.value = address;
+  showUserProfile.value = true;
+};
+
+provide("openUserProfile", openUserProfile);
 
 /** Get the other member's Pocketnet address in a 1:1 chat.
  *  room.members stores hex-encoded addresses; we compare in hex then decode to Base58. */
@@ -366,6 +376,11 @@ onUnmounted(() => {
     </template>
 
     <ChatInfoPanel :show="showInfoPanel" @close="showInfoPanel = false" @open-search="showSearch = true" />
+    <UserProfilePanel
+      :show="showUserProfile"
+      :address="profileAddress"
+      @close="showUserProfile = false"
+    />
     <DonateModal
       :show="showDonateModal"
       :receiver-address="otherMemberAddress"

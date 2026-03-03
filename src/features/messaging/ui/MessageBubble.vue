@@ -2,16 +2,19 @@
 import type { Message } from "@/entities/chat";
 import { useChatStore, MessageStatus, MessageType } from "@/entities/chat";
 import { formatTime } from "@/shared/lib/format";
-import { stripMentionAddresses } from "@/shared/lib/message-format";
+import { stripMentionAddresses, stripBastyonLinks } from "@/shared/lib/message-format";
 import { useFileDownload } from "../model/use-file-download";
 import MessageContent from "./MessageContent.vue";
 import MessageStatusIcon from "./MessageStatusIcon.vue";
 import PollCard from "./PollCard.vue";
+import TransferCard from "./TransferCard.vue";
 import ReactionRow from "./ReactionRow.vue";
 import VoiceMessage from "./VoiceMessage.vue";
-import { ref, onMounted } from "vue";
+import { ref, inject, onMounted } from "vue";
 import { useLongPress, useSwipeGesture } from "@/shared/lib/gestures";
 import { useThemeStore } from "@/entities/theme";
+
+const openUserProfile = inject<((address: string) => void) | null>("openUserProfile", null);
 
 interface Props {
   message: Message;
@@ -194,7 +197,7 @@ const replyPreviewText = computed(() => {
   if (reply.type === MessageType.video) return "Video";
   if (reply.type === MessageType.audio) return "Voice message";
   if (reply.type === MessageType.file) return reply.content || "File";
-  const text = stripMentionAddresses(reply.content);
+  const text = stripBastyonLinks(stripMentionAddresses(reply.content));
   return (text.length > 100 ? text.slice(0, 100) + "\u2026" : text) || "...";
 });
 </script>
@@ -238,7 +241,11 @@ const replyPreviewText = computed(() => {
     </div>
 
     <!-- Avatar slot -->
-    <div v-if="!chatStore.selectionMode && !props.isOwn && props.showAvatar && themeStore.showAvatarsInChat" class="shrink-0 self-end">
+    <div
+      v-if="!chatStore.selectionMode && !props.isOwn && props.showAvatar && themeStore.showAvatarsInChat"
+      class="shrink-0 cursor-pointer self-end"
+      @click.stop="openUserProfile?.(props.message.senderId)"
+    >
       <slot name="avatar" />
     </div>
     <div v-else-if="!chatStore.selectionMode && !props.isOwn && themeStore.showAvatarsInChat" class="w-8 shrink-0" />
@@ -318,7 +325,7 @@ const replyPreviewText = computed(() => {
           class="px-3 py-1.5 text-chat-base"
           :class="props.isOwn ? 'text-text-on-bg-ac-color' : 'text-text-color'"
         >
-          <MessageContent :text="message.fileInfo.caption" />
+          <MessageContent :text="message.fileInfo.caption" @mention-click="(userId) => openUserProfile?.(userId)" />
           <span
             v-if="themeStore.showTimestamps"
             class="relative -bottom-[3px] ml-2 inline-flex items-center gap-0.5 whitespace-nowrap align-bottom text-[10px]"
@@ -386,7 +393,7 @@ const replyPreviewText = computed(() => {
           class="px-3 py-1.5 text-chat-base"
           :class="props.isOwn ? 'text-text-on-bg-ac-color' : 'text-text-color'"
         >
-          <MessageContent :text="message.fileInfo.caption" />
+          <MessageContent :text="message.fileInfo.caption" @mention-click="(userId) => openUserProfile?.(userId)" />
           <span
             v-if="themeStore.showTimestamps"
             class="relative -bottom-[3px] ml-2 inline-flex items-center gap-0.5 whitespace-nowrap align-bottom text-[10px]"
@@ -487,7 +494,7 @@ const replyPreviewText = computed(() => {
         </button>
         <p v-if="fileState.error" class="mt-1 text-xs text-color-bad">{{ fileState.error }}</p>
         <div v-if="message.fileInfo?.caption" class="mt-1 text-chat-base opacity-90">
-          <MessageContent :text="message.fileInfo.caption" />
+          <MessageContent :text="message.fileInfo.caption" @mention-click="(userId) => openUserProfile?.(userId)" />
         </div>
         <div v-if="themeStore.showTimestamps" class="mt-1 flex items-center justify-end gap-1" :class="props.isOwn ? 'text-white/60' : 'text-text-on-main-bg-color'">
           <span class="text-[10px]">{{ time }}</span>
@@ -506,8 +513,9 @@ const replyPreviewText = computed(() => {
         <!-- Sender name in groups -->
         <div
           v-if="props.isGroup && !props.isOwn && props.isFirstInGroup"
-          class="mb-0.5 text-sm font-semibold"
+          class="mb-0.5 cursor-pointer text-sm font-semibold"
           :style="{ color: senderColor }"
+          @click.stop="openUserProfile?.(message.senderId)"
         >
           {{ chatStore.getDisplayName(message.senderId) }}
         </div>
@@ -524,6 +532,28 @@ const replyPreviewText = computed(() => {
         <ReactionRow v-if="message.reactions && Object.keys(message.reactions).length" :reactions="message.reactions" :is-own="props.isOwn" @toggle="handleToggleReaction" @add-reaction="handleAddReaction" />
       </div>
 
+      <!-- Transfer message -->
+      <div
+        v-else-if="message.type === MessageType.transfer && message.transferInfo"
+        class="rounded-bubble px-3 py-2"
+        :class="[tailClass, props.isOwn ? 'bg-chat-bubble-own text-text-on-bg-ac-color' : 'bg-chat-bubble-other text-text-color']"
+      >
+        <div
+          v-if="props.isGroup && !props.isOwn && props.isFirstInGroup"
+          class="mb-0.5 cursor-pointer text-sm font-semibold"
+          :style="{ color: senderColor }"
+          @click.stop="openUserProfile?.(message.senderId)"
+        >
+          {{ chatStore.getDisplayName(message.senderId) }}
+        </div>
+        <TransferCard :message="message" :is-own="props.isOwn" />
+        <div v-if="themeStore.showTimestamps" class="mt-1 flex items-center justify-end gap-1" :class="props.isOwn ? 'text-white/60' : 'text-text-on-main-bg-color'">
+          <span class="text-[10px]">{{ time }}</span>
+          <MessageStatusIcon v-if="props.isOwn" :status="msgStatus" />
+        </div>
+        <ReactionRow v-if="message.reactions && Object.keys(message.reactions).length" :reactions="message.reactions" :is-own="props.isOwn" @toggle="handleToggleReaction" @add-reaction="handleAddReaction" />
+      </div>
+
       <!-- Text message (default) -->
       <div
         v-else
@@ -533,8 +563,9 @@ const replyPreviewText = computed(() => {
         <!-- Sender name in groups -->
         <div
           v-if="props.isGroup && !props.isOwn && props.isFirstInGroup"
-          class="mb-0.5 text-sm font-semibold"
+          class="mb-0.5 cursor-pointer text-sm font-semibold"
           :style="{ color: senderColor }"
+          @click.stop="openUserProfile?.(message.senderId)"
         >
           {{ chatStore.getDisplayName(message.senderId) }}
         </div>
@@ -565,7 +596,7 @@ const replyPreviewText = computed(() => {
 
         <!-- Message content with parsed links/mentions -->
         <div class="text-chat-base">
-          <MessageContent :text="props.message.content" />
+          <MessageContent :text="props.message.content" :is-own="props.isOwn" @mention-click="(userId) => openUserProfile?.(userId)" />
           <!-- Inline timestamp (Telegram-style float) -->
           <span
             v-if="themeStore.showTimestamps"
