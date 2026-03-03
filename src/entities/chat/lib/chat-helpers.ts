@@ -123,3 +123,12 @@ export function parseFileInfo(content: Record<string, unknown>, msgtype: string)
 
   return undefined;
 }
+
+/** Check if a string looks like a proper human-readable name (not a hash, hex ID, or raw address) */
+export function looksLikeProperName(name: string, rawAddress?: string): boolean {
+  if (!name || name.length < 2) return false;
+  if (name.startsWith("#") || name.startsWith("!") || name.startsWith("@")) return false;
+  if (/^[a-f0-9]+$/i.test(name)) return false; // hex string
+  if (rawAddress && name === rawAddress) return false; // same as raw Bastyon address
+  return true;
+}

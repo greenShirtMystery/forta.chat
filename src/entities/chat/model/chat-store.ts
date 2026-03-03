@@ -2,12 +2,12 @@ import { getMatrixClientService } from "@/entities/matrix";
 import type { MatrixKit } from "@/entities/matrix";
 import type { Pcrypto, PcryptoRoomInstance } from "@/entities/matrix/model/matrix-crypto";
 import { getmatrixid, hexEncode, hexDecode } from "@/shared/lib/matrix/functions";
-import { matrixIdToAddress, messageTypeFromMime, parseFileInfo } from "../lib/chat-helpers";
+import { matrixIdToAddress, messageTypeFromMime, parseFileInfo, looksLikeProperName } from "../lib/chat-helpers";
 import { cacheRooms, getCachedRooms, cacheMessages, getCachedMessages } from "@/shared/lib/cache/chat-cache";
 import { defineStore } from "pinia";
 import { computed, ref, shallowRef, triggerRef } from "vue";
 
-import type { ChatRoom, FileInfo, Message, PollInfo, ReplyTo } from "./types";
+import type { ChatRoom, FileInfo, Message, PollInfo, ReplyTo, TransferInfo } from "./types";
 import { MessageStatus, MessageType } from "./types";
 
 const NAMESPACE = "chat";
@@ -20,15 +20,6 @@ function getRawEvent(matrixEvent: any): Record<string, unknown> | null {
   // Fallback: maybe it's already a raw event
   if (matrixEvent?.type && matrixEvent?.sender) return matrixEvent;
   return null;
-}
-
-/** Check if a string looks like a proper human-readable name (not a hash, hex ID, or raw address) */
-function looksLikeProperName(name: string, rawAddress?: string): boolean {
-  if (!name || name.length < 2) return false;
-  if (name.startsWith("#") || name.startsWith("!") || name.startsWith("@")) return false;
-  if (/^[a-f0-9]+$/i.test(name)) return false; // hex string
-  if (rawAddress && name === rawAddress) return false; // same as raw Bastyon address
-  return true;
 }
 
 /** Convert a Matrix SDK room object into our ChatRoom type */
@@ -1265,6 +1256,28 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     const relTo = content["m.relates_to"] as Record<string, unknown> | undefined;
     if (relTo?.rel_type === "m.replace") return null;
 
+    // Handle donation/transfer messages (m.notice with txId — from original bastyon-chat)
+    const mtype = content.msgtype as string;
+    if (mtype === "m.notice" && content.txId) {
+      const body = (content.body as string) ?? `Sent ${content.amount} PKOIN`;
+      return {
+        id: raw.event_id as string,
+        roomId,
+        senderId: matrixIdToAddress(raw.sender as string),
+        content: body,
+        timestamp: (raw.origin_server_ts as number) ?? 0,
+        status: MessageStatus.sent,
+        type: MessageType.transfer,
+        transferInfo: {
+          txId: content.txId as string,
+          amount: content.amount as number,
+          from: content.from as string,
+          to: content.to as string,
+          message: body || undefined,
+        },
+      };
+    }
+
     let body = (content.body as string) ?? "";
     let msgType = MessageType.text;
 
@@ -1283,8 +1296,31 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       }
     }
 
+    // Detect transfer messages encoded as JSON (encrypted with Pcrypto)
+    if (body.startsWith('{"_transfer":true')) {
+      try {
+        const transfer = JSON.parse(body);
+        const displayBody = transfer.message || `Sent ${transfer.amount} PKOIN`;
+        return {
+          id: raw.event_id as string,
+          roomId,
+          senderId: matrixIdToAddress(raw.sender as string),
+          content: displayBody,
+          timestamp: (raw.origin_server_ts as number) ?? 0,
+          status: MessageStatus.sent,
+          type: MessageType.transfer,
+          transferInfo: {
+            txId: transfer.txId as string,
+            amount: transfer.amount as number,
+            from: transfer.from as string,
+            to: transfer.to as string,
+            message: transfer.message || undefined,
+          },
+        };
+      } catch { /* not valid transfer JSON, continue as text */ }
+    }
+
     // Determine message type and parse file info
-    const mtype = content.msgtype as string;
     let fileInfo: FileInfo | undefined;
 
     if (mtype === "m.image" || mtype === "m.file" || mtype === "m.audio" || mtype === "m.video") {
@@ -1576,20 +1612,29 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         return;
       }
 
-      // Paginate backwards to load message history
-      try {
-        await matrixService.scrollback(roomId, 25);
-      } catch (e) {
-        console.warn("[chat-store] scrollback failed:", e);
-      }
-
+      // Check if the SDK already has timeline events from sync.
+      // If yes, skip scrollback (no extra server request).
+      // If no, request scrollback to populate the timeline.
       let timelineEvents = getTimelineEvents(matrixRoom);
+      const hasMessagesFromSync = timelineEvents.some((ev) => {
+        const raw = getRawEvent(ev);
+        return raw?.type === "m.room.message";
+      });
 
-      // Retry once if timeline is empty — sync may not have populated it yet
-      if (timelineEvents.length === 0) {
-        await new Promise(r => setTimeout(r, 1500));
-        try { await matrixService.scrollback(roomId, 25); } catch { /* ignore */ }
+      if (!hasMessagesFromSync) {
+        try {
+          await matrixService.scrollback(roomId, 25);
+        } catch (e) {
+          console.warn("[chat-store] scrollback failed:", e);
+        }
         timelineEvents = getTimelineEvents(matrixRoom);
+
+        // Retry once if timeline is still empty — sync may not have populated it yet
+        if (timelineEvents.length === 0) {
+          await new Promise(r => setTimeout(r, 1500));
+          try { await matrixService.scrollback(roomId, 25); } catch { /* ignore */ }
+          timelineEvents = getTimelineEvents(matrixRoom);
+        }
       }
 
       const msgs = await parseTimelineEvents(timelineEvents, roomId);
@@ -1948,6 +1993,33 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       const matrixService = getMatrixClientService();
       const myUserId = matrixService.getUserId();
       if (myUserId && raw.sender === myUserId) return;
+
+      // Handle donation/transfer messages (m.notice with txId)
+      const mtype0 = content.msgtype as string;
+      if (mtype0 === "m.notice" && content.txId) {
+        const txBody = (content.body as string) ?? `Sent ${content.amount} PKOIN`;
+        addMessage(roomId, {
+          id: raw.event_id as string,
+          roomId,
+          senderId: matrixIdToAddress(raw.sender as string),
+          content: txBody,
+          timestamp: (raw.origin_server_ts as number) ?? Date.now(),
+          status: MessageStatus.sent,
+          type: MessageType.transfer,
+          transferInfo: {
+            txId: content.txId as string,
+            amount: content.amount as number,
+            from: content.from as string,
+            to: content.to as string,
+            message: txBody || undefined,
+          },
+        });
+        if (roomId === activeRoomId.value) {
+          sendReadReceiptIfVisible(roomId, event);
+        }
+        return;
+      }
+
       let body = (content.body as string) ?? "";
       let msgType = MessageType.text;
 
@@ -1965,6 +2037,34 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         } else {
           body = "[no room crypto]";
         }
+      }
+
+      // Detect transfer messages encoded as JSON (encrypted with Pcrypto)
+      if (body.startsWith('{"_transfer":true')) {
+        try {
+          const transfer = JSON.parse(body);
+          const displayBody = transfer.message || `Sent ${transfer.amount} PKOIN`;
+          addMessage(roomId, {
+            id: raw.event_id as string,
+            roomId,
+            senderId: matrixIdToAddress(raw.sender as string),
+            content: displayBody,
+            timestamp: (raw.origin_server_ts as number) ?? Date.now(),
+            status: MessageStatus.sent,
+            type: MessageType.transfer,
+            transferInfo: {
+              txId: transfer.txId as string,
+              amount: transfer.amount as number,
+              from: transfer.from as string,
+              to: transfer.to as string,
+              message: transfer.message || undefined,
+            },
+          });
+          if (roomId === activeRoomId.value) {
+            sendReadReceiptIfVisible(roomId, event);
+          }
+          return;
+        } catch { /* not valid transfer JSON, continue as text */ }
       }
 
       const mtype = content.msgtype as string;
