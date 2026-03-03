@@ -236,23 +236,11 @@ onUnmounted(() => {
         </svg>
       </button>
 
-      <!-- Video call button (1:1 only) -->
-      <button
-        v-if="!chatStore.activeRoom.isGroup"
-        class="btn-press flex h-11 w-11 items-center justify-center rounded-full text-text-on-main-bg-color transition-colors hover:bg-neutral-grad-0"
-        :title="t('call.videoCall')"
-        @click="startCallFromHeader('video')"
-      >
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <polygon points="23 7 16 12 23 17 23 7" />
-          <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
-        </svg>
-      </button>
-
-      <!-- More menu -->
+      <!-- Info panel button -->
       <button
         class="btn-press flex h-11 w-11 items-center justify-center rounded-full text-text-on-main-bg-color transition-colors hover:bg-neutral-grad-0"
-        :title="t('chat.more')"
+        :title="t('info.title')"
+        @click="showInfoPanel = !showInfoPanel"
       >
         <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
           <circle cx="12" cy="5" r="2" />
