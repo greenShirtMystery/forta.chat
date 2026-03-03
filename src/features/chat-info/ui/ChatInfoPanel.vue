@@ -22,6 +22,7 @@ const props = defineProps<Props>();
 const emit = defineEmits<{
   close: [];
   openSearch: [];
+  goToMessage: [messageId: string];
 }>();
 
 const { t } = useI18n();
@@ -748,6 +749,7 @@ const openGallery = (tab: "media" | "files" | "links" | "voice" = "media") => {
             v-else-if="screen === 'gallery'"
             :initial-tab="galleryInitialTab"
             @back="screen = 'main'"
+            @go-to-message="(id) => { emit('goToMessage', id); emit('close'); }"
           />
         </div>
       </div>

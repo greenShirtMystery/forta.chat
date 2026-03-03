@@ -363,7 +363,7 @@ onUnmounted(() => {
       </template>
     </template>
 
-    <ChatInfoPanel :show="showInfoPanel" @close="showInfoPanel = false" @open-search="showSearch = true" />
+    <ChatInfoPanel :show="showInfoPanel" @close="showInfoPanel = false" @open-search="showSearch = true" @go-to-message="(id) => { showInfoPanel = false; messageListRef?.scrollToMessage(id); }" />
     <UserProfilePanel
       :show="showUserProfile"
       :address="profileAddress"

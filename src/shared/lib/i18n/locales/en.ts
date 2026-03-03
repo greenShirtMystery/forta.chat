@@ -299,6 +299,9 @@ export const en = {
   "chatInfo.confirmBlock": "Are you sure you want to block this user?",
   "chatInfo.muteNotifications": "Mute notifications",
   "chatInfo.unmuteNotifications": "Unmute notifications",
+  "chatInfo.forward": "Forward",
+  "chatInfo.goToMessage": "Go to message",
+  "chatInfo.delete": "Delete",
 
   // ── Polls ──
   "poll.createPoll": "Create Poll",

@@ -7,7 +7,10 @@ const props = defineProps<{
   messages: Message[];
 }>();
 
-const emit = defineEmits<{ select: [messageId: string] }>();
+const emit = defineEmits<{
+  select: [messageId: string];
+  contextmenu: [payload: { message: Message; x: number; y: number }];
+}>();
 const { t } = useI18n();
 const { getState, download } = useFileDownload();
 
@@ -67,6 +70,7 @@ const ensureLoaded = (msg: Message) => {
           :key="msg.id"
           class="relative aspect-square overflow-hidden rounded-sm bg-neutral-grad-0"
           @click="emit('select', msg.id)"
+          @contextmenu.prevent="emit('contextmenu', { message: msg, x: $event.clientX, y: $event.clientY })"
           @vue:mounted="ensureLoaded(msg)"
         >
           <img

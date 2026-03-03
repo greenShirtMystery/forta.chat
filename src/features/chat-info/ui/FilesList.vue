@@ -7,6 +7,10 @@ const props = defineProps<{
   messages: Message[];
 }>();
 
+const emit = defineEmits<{
+  contextmenu: [payload: { message: Message; x: number; y: number }];
+}>();
+
 const { t } = useI18n();
 const { getState, download, saveFile, formatSize } = useFileDownload();
 
@@ -81,6 +85,7 @@ const handleClick = async (msg: Message) => {
         :key="msg.id"
         class="flex w-full items-center gap-3 px-3 py-2 text-left transition-colors hover:bg-neutral-grad-0"
         @click="handleClick(msg)"
+        @contextmenu.prevent="emit('contextmenu', { message: msg, x: $event.clientX, y: $event.clientY })"
       >
         <!-- File type icon -->
         <div

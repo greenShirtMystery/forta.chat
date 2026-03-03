@@ -7,6 +7,10 @@ const props = defineProps<{
   messages: Message[];
 }>();
 
+const emit = defineEmits<{
+  contextmenu: [payload: { message: Message; x: number; y: number }];
+}>();
+
 const { t } = useI18n();
 const authStore = useAuthStore();
 
@@ -65,6 +69,7 @@ function getSenderName(address: string): string {
         v-for="msg in group.messages"
         :key="msg.id"
         class="px-3 py-2"
+        @contextmenu.prevent="emit('contextmenu', { message: msg, x: $event.clientX, y: $event.clientY })"
       >
         <div class="mb-1 text-xs text-text-on-main-bg-color">
           {{ getSenderName(msg.senderId) }}

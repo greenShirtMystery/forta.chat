@@ -301,6 +301,9 @@ export const ru: Record<TranslationKey, string> = {
   "chatInfo.confirmBlock": "Вы уверены, что хотите заблокировать этого пользователя?",
   "chatInfo.muteNotifications": "Выключить уведомления",
   "chatInfo.unmuteNotifications": "Включить уведомления",
+  "chatInfo.forward": "Переслать",
+  "chatInfo.goToMessage": "Перейти к сообщению",
+  "chatInfo.delete": "Удалить",
 
   // ── Polls ──
   "poll.createPoll": "Создать опрос",

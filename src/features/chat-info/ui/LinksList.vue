@@ -6,6 +6,10 @@ const props = defineProps<{
   messages: Message[];
 }>();
 
+const emit = defineEmits<{
+  contextmenu: [payload: { messageId: string; x: number; y: number }];
+}>();
+
 const { t } = useI18n();
 
 const URL_RE = /https?:\/\/[^\s<>]+|www\.[^\s<>]+/g;
@@ -14,6 +18,7 @@ interface LinkItem {
   url: string;
   context: string;
   timestamp: number;
+  messageId: string;
 }
 
 interface MonthGroup {
@@ -39,6 +44,7 @@ const grouped = computed<MonthGroup[]>(() => {
         url,
         context: msg.content.slice(0, 60),
         timestamp: msg.timestamp,
+        messageId: msg.id,
       });
     }
   }
@@ -96,6 +102,7 @@ function openLink(url: string): void {
         :key="item.url + idx"
         class="flex w-full items-center gap-3 px-3 py-2 text-left transition-colors hover:bg-neutral-grad-0"
         @click="openLink(item.url)"
+        @contextmenu.prevent="emit('contextmenu', { messageId: item.messageId, x: $event.clientX, y: $event.clientY })"
       >
         <!-- Globe icon -->
         <div class="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-color-bg-ac/10">
