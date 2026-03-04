@@ -7,6 +7,8 @@ export const ru: Record<TranslationKey, string> = {
   "nav.settings": "Настройки",
   "nav.searchUsers": "Поиск пользователей",
   "nav.newGroup": "Новая группа",
+  "nav.back": "Назад",
+  "nav.closeSearch": "Закрыть поиск",
 
   // ── Contacts panel ──
   "contacts.searchPlaceholder": "Поиск контактов...",

@@ -5,6 +5,8 @@ export const en = {
   "nav.settings": "Settings",
   "nav.searchUsers": "Search users",
   "nav.newGroup": "New group",
+  "nav.back": "Go back",
+  "nav.closeSearch": "Close search",
 
   // ── Contacts panel ──
   "contacts.searchPlaceholder": "Search contacts...",

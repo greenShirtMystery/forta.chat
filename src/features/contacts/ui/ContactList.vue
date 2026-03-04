@@ -1,18 +1,19 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { ref, computed } from "vue";
 import { useChatStore } from "@/entities/chat";
 import type { ChatRoom, Message } from "@/entities/chat";
 import { MessageType, MessageStatus } from "@/entities/chat";
 import MessageStatusIcon from "@/features/messaging/ui/MessageStatusIcon.vue";
 import { useAuthStore } from "@/entities/auth";
 import { formatRelativeTime } from "@/shared/lib/format";
-import { stripMentionAddresses } from "@/shared/lib/message-format";
+import { stripMentionAddresses, stripBastyonLinks } from "@/shared/lib/message-format";
 import { useLongPress } from "@/shared/lib/gestures";
 import { ContextMenu } from "@/shared/ui/context-menu";
 import type { ContextMenuItem } from "@/shared/ui/context-menu";
 import { UserAvatar } from "@/entities/user";
 import { RecycleScroller } from "vue-virtual-scroller";
 import "vue-virtual-scroller/dist/vue-virtual-scroller.css";
+import { getDraft } from "@/shared/lib/drafts";
 
 interface Props {
   filter?: "all" | "personal" | "groups" | "invites";
@@ -60,6 +61,8 @@ const formatPreview = (msg: Message | undefined, room: ChatRoom): string => {
   }
   // Strip mention hex addresses for preview (e.g. @hexid:Name → @Name)
   preview = stripMentionAddresses(preview);
+  // Replace bastyon post links with short label
+  preview = stripBastyonLinks(preview);
 
   // Add sender prefix for group chats
   if (room.isGroup && msg.senderId) {
@@ -78,6 +81,18 @@ const getTypingText = (roomId: string): string => {
   if (others.length === 0) return "";
   if (others.length === 1) return "typing...";
   return `${others.length} typing...`;
+};
+
+// --- Drafts: reactive map of roomId → draft text ---
+// Bump version when user switches rooms (draft may have changed)
+const draftsVersion = ref(0);
+watch(() => chatStore.activeRoomId, () => { draftsVersion.value++; });
+
+/** Get draft text for a room (reactive via draftsVersion) */
+const getRoomDraft = (roomId: string): string => {
+  // eslint-disable-next-line @typescript-eslint/no-unused-expressions
+  draftsVersion.value; // reactive dependency
+  return getDraft(roomId);
 };
 
 const PAGE_SIZE = 30;
@@ -203,9 +218,14 @@ const getRoomLongPress = (room: ChatRoom) => {
   <div class="flex flex-col">
     <div
       v-if="filteredRooms.length === 0"
-      class="p-6 text-center text-sm text-text-on-main-bg-color"
+      class="flex flex-col items-center gap-3 px-6 py-12 text-center"
     >
-      No conversations yet
+      <div class="flex h-14 w-14 items-center justify-center rounded-full bg-neutral-grad-0">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="text-text-on-main-bg-color">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+        </svg>
+      </div>
+      <p class="text-sm text-text-on-main-bg-color">{{ t("contactList.noConversations") }}</p>
     </div>
 
     <RecycleScroller
@@ -218,7 +238,7 @@ const getRoomLongPress = (room: ChatRoom) => {
     >
       <template #default="{ item: room }">
         <button
-          class="flex h-[68px] w-full items-center gap-3 px-3 py-2.5 transition-all hover:bg-neutral-grad-0 active:scale-[0.98] active:bg-neutral-grad-0"
+          class="flex h-[68px] w-full cursor-pointer items-center gap-3 px-3 py-2.5 transition-all hover:bg-neutral-grad-0 active:scale-[0.98] active:bg-neutral-grad-0"
           :class="room.id === chatStore.activeRoomId ? 'bg-color-bg-ac/10' : ''"
           @click="handleSelect(room)"
           @contextmenu.prevent="(e: MouseEvent) => { ctxMenu = { show: true, x: e.clientX, y: e.clientY, roomId: room.id }; }"
@@ -271,7 +291,7 @@ const getRoomLongPress = (room: ChatRoom) => {
               </span>
             </div>
 
-            <!-- Preview row: last message + unread badge -->
+            <!-- Preview row: draft / typing / last message + unread badge -->
             <div class="mt-0.5 flex items-center justify-between gap-2">
               <span
                 v-if="getTypingText(room.id)"
@@ -284,6 +304,10 @@ const getRoomLongPress = (room: ChatRoom) => {
                 </span>
                 {{ getTypingText(room.id) }}
               </span>
+              <span
+                v-else-if="getRoomDraft(room.id) && room.id !== chatStore.activeRoomId"
+                class="truncate text-sm"
+              ><span class="font-medium text-red-400">{{ t("contactList.draft") }}:</span> <span class="text-text-on-main-bg-color">{{ getRoomDraft(room.id) }}</span></span>
               <span v-else-if="room.membership === 'invite'" class="truncate text-sm italic text-color-bg-ac">
                 Invitation to chat
               </span>

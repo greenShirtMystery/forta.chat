@@ -182,6 +182,7 @@ onUnmounted(() => {
       <!-- Back button (mobile) -->
       <button
         class="btn-press flex h-11 w-11 items-center justify-center rounded-full text-text-on-main-bg-color transition-colors hover:bg-neutral-grad-0 md:hidden"
+        :aria-label="t('nav.back')"
         @click="emit('back')"
       >
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -191,7 +192,8 @@ onUnmounted(() => {
 
       <!-- Room avatar + info (clickable to open info panel) -->
       <button
-        class="flex min-w-0 flex-1 items-center gap-3 text-left"
+        class="flex min-w-0 flex-1 cursor-pointer items-center gap-3 text-left"
+        :aria-label="chatStore.activeRoom?.name + ' — ' + t('info.title')"
         @click="showInfoPanel = true"
       >
         <UserAvatar
@@ -217,6 +219,7 @@ onUnmounted(() => {
       <button
         class="btn-press flex h-11 w-11 items-center justify-center rounded-full text-text-on-main-bg-color transition-colors hover:bg-neutral-grad-0"
         :title="t('chat.search')"
+        :aria-label="t('chat.search')"
         @click="showSearch = !showSearch"
       >
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -229,6 +232,7 @@ onUnmounted(() => {
         v-if="!chatStore.activeRoom.isGroup"
         class="btn-press flex h-11 w-11 items-center justify-center rounded-full text-text-on-main-bg-color transition-colors hover:bg-neutral-grad-0"
         :title="t('call.voiceCall')"
+        :aria-label="t('call.voiceCall')"
         @click="startCallFromHeader('voice')"
       >
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -240,6 +244,7 @@ onUnmounted(() => {
       <button
         class="btn-press flex h-11 w-11 items-center justify-center rounded-full text-text-on-main-bg-color transition-colors hover:bg-neutral-grad-0"
         :title="t('info.title')"
+        :aria-label="t('info.title')"
         @click="showInfoPanel = !showInfoPanel"
       >
         <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
@@ -253,12 +258,16 @@ onUnmounted(() => {
     <!-- No room selected -->
     <div
       v-if="!chatStore.activeRoom"
-      class="flex flex-1 flex-col items-center justify-center gap-3 text-text-on-main-bg-color"
+      class="flex flex-1 flex-col items-center justify-center gap-4 px-6 text-center text-text-on-main-bg-color"
     >
-      <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" class="opacity-30">
-        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-      </svg>
-      <span class="text-sm">{{ t("chat.selectToStart") }}</span>
+      <div class="flex h-20 w-20 items-center justify-center rounded-full bg-color-bg-ac/8">
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" class="text-color-bg-ac/50">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+        </svg>
+      </div>
+      <div>
+        <p class="text-base font-medium text-text-color/60">{{ t("chat.selectToStart") }}</p>
+      </div>
     </div>
 
     <!-- Active room content -->

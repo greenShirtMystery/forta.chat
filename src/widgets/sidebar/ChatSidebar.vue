@@ -76,8 +76,9 @@ const handleRoomCreated = () => {
 </script>
 
 <template>
-  <div
+  <aside
     class="flex h-full flex-col border-r border-neutral-grad-0 bg-chat-sidebar"
+    aria-label="Chat sidebar"
   >
     <div class="relative min-h-0 flex-1 overflow-hidden">
       <transition :name="'sidebar-slide-' + tabSlideDir" mode="out-in">
@@ -97,6 +98,8 @@ const handleRoomCreated = () => {
           <button
             class="btn-press flex h-11 w-11 items-center justify-center rounded-full text-text-on-main-bg-color transition-colors hover:bg-neutral-grad-0"
             :title="t('nav.searchUsers')"
+            :aria-label="searchOpen ? t('nav.closeSearch') : t('nav.searchUsers')"
+            :aria-pressed="searchOpen"
             @click="searchOpen = !searchOpen"
           >
             <svg
@@ -129,6 +132,7 @@ const handleRoomCreated = () => {
           <button
             class="btn-press flex h-11 w-11 items-center justify-center rounded-full text-text-on-main-bg-color transition-colors hover:bg-neutral-grad-0"
             :title="t('nav.newGroup')"
+            :aria-label="t('nav.newGroup')"
             @click="emit('newGroup')"
           >
             <svg
@@ -184,7 +188,7 @@ const handleRoomCreated = () => {
     </div>
 
     <BottomTabBar :model-value="activeTab" @update:model-value="setTab" />
-  </div>
+  </aside>
 </template>
 
 <style scoped>

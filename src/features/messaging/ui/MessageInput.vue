@@ -2,7 +2,7 @@
 import { ref, nextTick, watch, computed } from "vue";
 import { useChatStore, MessageType } from "@/entities/chat";
 import { useThemeStore } from "@/entities/theme";
-import { stripMentionAddresses } from "@/shared/lib/message-format";
+import { stripMentionAddresses, stripBastyonLinks } from "@/shared/lib/message-format";
 import { getDraft, saveDraft, clearDraft } from "@/shared/lib/drafts";
 import { useMessages } from "../model/use-messages";
 import { useMediaUpload } from "../model/use-media-upload";
@@ -14,6 +14,13 @@ import VoiceRecorder from "./VoiceRecorder.vue";
 import { useVoiceRecorder } from "../model/use-voice-recorder";
 import { useMentionAutocomplete } from "../model/use-mention-autocomplete";
 import MentionAutocomplete from "./MentionAutocomplete.vue";
+
+const props = defineProps<{
+  /** Show "Send PKOIN" in attachment menu (1:1 + wallet available) */
+  showDonate?: boolean;
+}>();
+
+const emit = defineEmits<{ donate: [] }>();
 
 const chatStore = useChatStore();
 const themeStore = useThemeStore();
@@ -206,7 +213,7 @@ const replyInputPreviewText = computed(() => {
   if (reply.type === MessageType.video) return "Video";
   if (reply.type === MessageType.audio) return "Voice message";
   if (reply.type === MessageType.file) return reply.content || "File";
-  const text = stripMentionAddresses(reply.content);
+  const text = stripBastyonLinks(stripMentionAddresses(reply.content));
   return (text.length > 100 ? text.slice(0, 100) + "\u2026" : text) || "...";
 });
 
@@ -267,6 +274,7 @@ const insertEmoji = (emoji: string) => {
         </div>
         <button
           class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-text-on-main-bg-color hover:bg-neutral-grad-0"
+          aria-label="Cancel editing"
           @click="cancelEdit"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -293,6 +301,7 @@ const insertEmoji = (emoji: string) => {
         </div>
         <button
           class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-text-on-main-bg-color hover:bg-neutral-grad-0"
+          aria-label="Cancel reply"
           @click="cancelReply"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -348,6 +357,7 @@ const insertEmoji = (emoji: string) => {
       <button
         class="btn-press flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-text-on-main-bg-color/60 transition-colors hover:text-text-on-main-bg-color"
         title="Emoji"
+        aria-label="Open emoji picker"
         @click="(e: MouseEvent) => { const rect = (e.currentTarget as HTMLElement).getBoundingClientRect(); emojiPickerPos = { x: rect.left, y: rect.top }; showEmojiPicker = !showEmojiPicker; }"
       >
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -360,8 +370,9 @@ const insertEmoji = (emoji: string) => {
         ref="textareaRef"
         v-model="text"
         placeholder="Message"
+        aria-label="Type a message"
         rows="1"
-        class="flex-1 resize-none rounded-2xl bg-chat-input-bg px-4 py-2.5 text-base leading-[24px] text-text-color outline-none placeholder:text-neutral-grad-2"
+        class="flex-1 resize-none rounded-2xl bg-chat-input-bg px-4 py-2.5 text-base leading-[24px] text-text-color outline-none transition-shadow duration-200 placeholder:text-neutral-grad-2 focus:ring-2 focus:ring-color-bg-ac/30"
         :disabled="sending"
         @keydown="handleKeydown"
         @input="handleInput"
@@ -375,6 +386,7 @@ const insertEmoji = (emoji: string) => {
         class="btn-press flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-text-on-main-bg-color/60 transition-colors hover:text-text-on-main-bg-color"
         :disabled="sending"
         title="Attach"
+        aria-label="Attach file"
         @click="toggleAttachmentPanel"
       >
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -389,6 +401,7 @@ const insertEmoji = (emoji: string) => {
           key="send"
           class="send-btn flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-color-bg-ac text-white transition-all hover:bg-color-bg-ac-1 disabled:opacity-50"
           :disabled="!text.trim() || sending"
+          :aria-label="isEditing ? 'Confirm edit' : 'Send message'"
           @click="handleSend"
         >
           <svg v-if="sending" class="h-5 w-5 animate-spin rounded-full border-2 border-white border-t-transparent" viewBox="0 0 24 24" />
@@ -446,10 +459,12 @@ const insertEmoji = (emoji: string) => {
       :show="showAttachmentPanel"
       :x="attachmentPanelPos.x"
       :y="attachmentPanelPos.y"
+      :show-donate="props.showDonate"
       @close="showAttachmentPanel = false"
       @select-photo="openPhotoPicker"
       @select-file="openFilePicker"
       @select-poll="showPollCreator = true"
+      @select-donate="emit('donate')"
     />
 
     <!-- Poll creator -->
