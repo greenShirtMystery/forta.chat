@@ -473,8 +473,10 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     return activeRoomId.value ? getRoomById(activeRoomId.value) : undefined;
   });
 
+  // Spread ensures a new array reference on every recompute, so dependents
+  // (virtualItems, RecycleScroller) always see the change even with shallowRef.
   const activeMessages = computed(() =>
-    activeRoomId.value ? (messages.value[activeRoomId.value] ?? []) : []
+    activeRoomId.value ? [...(messages.value[activeRoomId.value] ?? [])] : []
   );
 
   const activeMediaMessages = computed(() =>
