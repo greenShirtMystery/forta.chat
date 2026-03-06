@@ -63,20 +63,20 @@ const currentUser = computed(() =>
 
 const torStatusColor = computed(() => {
   switch (torStore.status) {
-    case "started": return "text-green-500";
+    case "started": return "text-color-good";
     case "running":
-    case "install": return "text-yellow-500";
-    case "failed": return "text-red-500";
+    case "install": return "text-color-star-yellow";
+    case "failed": return "text-color-bad";
     default: return "text-text-on-main-bg-color";
   }
 });
 
 const torDotClass = computed(() => {
   switch (torStore.status) {
-    case "started": return "bg-green-500";
+    case "started": return "bg-color-good";
     case "running":
-    case "install": return "bg-yellow-500 animate-pulse";
-    case "failed": return "bg-red-500";
+    case "install": return "bg-color-star-yellow animate-pulse";
+    case "failed": return "bg-color-bad";
     default: return "bg-neutral-400";
   }
 });
@@ -240,13 +240,13 @@ const handleLogout = () => {
           </div>
           <p
             v-if="torStore.isConnecting && torStore.info"
-            class="mt-2 pl-8 text-xs text-yellow-500"
+            class="mt-2 pl-8 text-xs text-color-star-yellow"
           >
             {{ torStore.info }}
           </p>
           <p
             v-else-if="torStore.status === 'failed'"
-            class="mt-2 pl-8 text-xs text-red-500"
+            class="mt-2 pl-8 text-xs text-color-bad"
           >
             {{ t("settings.torFailed") }}
           </p>

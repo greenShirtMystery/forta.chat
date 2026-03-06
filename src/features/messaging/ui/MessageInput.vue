@@ -67,6 +67,13 @@ watch(() => chatStore.editingMessage, (editing) => {
   }
 }, { immediate: true });
 
+// Auto-focus textarea when replying
+watch(() => chatStore.replyingTo, (reply) => {
+  if (reply) {
+    nextTick(() => textareaRef.value?.focus());
+  }
+});
+
 const isEditing = computed(() => !!chatStore.editingMessage);
 
 const cancelEdit = () => {
@@ -260,7 +267,7 @@ const insertEmoji = (emoji: string) => {
     <transition name="input-bar">
       <div
         v-if="isEditing"
-        class="flex items-center gap-2 border-b border-neutral-grad-0 px-3 py-2"
+        class="mx-auto flex max-w-6xl items-center gap-2 border-b border-neutral-grad-0 px-3 py-2"
       >
         <div class="flex h-8 w-8 items-center justify-center text-color-bg-ac">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -288,7 +295,7 @@ const insertEmoji = (emoji: string) => {
     <transition name="input-bar">
       <div
         v-if="!isEditing && chatStore.replyingTo"
-        class="flex items-center gap-2 border-b border-neutral-grad-0 px-3 py-2"
+        class="mx-auto flex max-w-6xl items-center gap-2 border-b border-neutral-grad-0 px-3 py-2"
       >
         <div class="h-8 w-0.5 shrink-0 rounded-full bg-color-bg-ac" />
         <div class="min-w-0 flex-1">
@@ -327,7 +334,7 @@ const insertEmoji = (emoji: string) => {
     />
 
     <!-- Input row -->
-    <div v-else class="relative flex items-end gap-1 px-2 py-2">
+    <div v-else class="relative mx-auto flex max-w-6xl items-end gap-1.5 px-2 py-2">
       <!-- Mention autocomplete dropdown -->
       <MentionAutocomplete
         v-if="mention.active.value && mention.filteredMembers.value.length > 0 && chatStore.activeRoom?.isGroup"
@@ -379,6 +386,20 @@ const insertEmoji = (emoji: string) => {
         @click="mention.onCursorChange()"
         @keyup="mention.onCursorChange()"
       />
+
+      <!-- PKOIN send button (right of textarea, before attach) -->
+      <button
+        v-if="props.showDonate"
+        class="btn-press flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-color-txt-ac/60 transition-colors hover:text-color-txt-ac"
+        :disabled="sending"
+        title="Send PKOIN"
+        aria-label="Send PKOIN"
+        @click="emit('donate')"
+      >
+        <svg width="20" height="20" viewBox="0 0 18 18" fill="currentColor">
+          <path fill-rule="evenodd" clip-rule="evenodd" d="M17.2584 1.97869L15.182 0L12.7245 2.57886C11.5308 1.85218 10.1288 1.43362 8.62907 1.43362C7.32722 1.43362 6.09904 1.74902 5.01676 2.30756L2.81787 6.45386e-05L0.741455 1.97875L2.73903 4.07498C1.49651 5.46899 0.741455 7.30694 0.741455 9.32124C0.741455 11.1753 1.38114 12.8799 2.45184 14.2264L0.741455 16.0213L2.81787 18L4.61598 16.1131C5.79166 16.8092 7.1637 17.2088 8.62907 17.2088C10.2903 17.2088 11.8317 16.6953 13.1029 15.8182L15.182 18L17.2584 16.0213L15.1306 13.7884C16.0049 12.5184 16.5167 10.9796 16.5167 9.32124C16.5167 7.50123 15.9003 5.8252 14.8648 4.49052L17.2584 1.97869ZM3.5551 9.32124C3.5551 12.1235 5.82679 14.3952 8.62907 14.3952C11.4313 14.3952 13.703 12.1235 13.703 9.32124C13.703 6.51896 11.4313 4.24727 8.62907 4.24727C5.82679 4.24727 3.5551 6.51896 3.5551 9.32124Z" />
+        </svg>
+      </button>
 
       <!-- Attachment button (right of textarea) -->
       <button

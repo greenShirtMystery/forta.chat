@@ -51,6 +51,40 @@ const fileCount = computed(() => {
   return chatStore.activeMessages.filter(m => m.type === "file" || m.type === "audio").length;
 });
 
+// ── Invite link (group sharing) ──
+const roomPublic = ref(false);
+const togglingPublic = ref(false);
+const linkCopied = ref(false);
+
+const refreshRoomPublic = () => {
+  if (room.value?.isGroup) {
+    roomPublic.value = chatStore.isRoomPublic(room.value.id);
+  }
+};
+
+watch(room, refreshRoomPublic, { immediate: true });
+
+const inviteLink = computed(() => {
+  if (!room.value) return "";
+  const base = window.location.origin + window.location.pathname;
+  return `${base}#/join?room=${encodeURIComponent(room.value.id)}`;
+});
+
+const togglePublic = async () => {
+  if (!room.value || togglingPublic.value) return;
+  togglingPublic.value = true;
+  const newVal = !roomPublic.value;
+  const ok = await chatStore.setRoomPublic(room.value.id, newVal);
+  if (ok) roomPublic.value = newVal;
+  togglingPublic.value = false;
+};
+
+const copyInviteLink = async () => {
+  await navigator.clipboard.writeText(inviteLink.value);
+  linkCopied.value = true;
+  setTimeout(() => linkCopied.value = false, 2000);
+};
+
 // ── Mute state ──
 const isMuted = computed(() => {
   if (!room.value) return false;
@@ -497,6 +531,46 @@ const openGallery = (tab: "media" | "files" | "links" | "voice" = "media") => {
               </button>
             </div>
 
+            <!-- Invite link section (group only, admin or already public) -->
+            <div v-if="room.isGroup && (isAdmin || roomPublic)" class="border-t border-neutral-grad-0 px-4 py-3">
+              <div class="mb-2 flex items-center justify-between">
+                <div class="flex items-center gap-2">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-text-on-main-bg-color">
+                    <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                    <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+                  </svg>
+                  <span class="text-sm font-medium text-text-color">{{ t("shareGroup.inviteLink") }}</span>
+                </div>
+                <div v-if="isAdmin" class="flex items-center gap-2">
+                  <span class="text-[11px] text-text-on-main-bg-color">{{ t("shareGroup.publicGroup") }}</span>
+                  <Toggle :model-value="roomPublic" size="sm" :disabled="togglingPublic" @update:model-value="togglePublic" />
+                </div>
+              </div>
+
+              <template v-if="roomPublic">
+                <div class="flex items-center gap-2">
+                  <input
+                    :value="inviteLink"
+                    readonly
+                    class="min-w-0 flex-1 rounded-lg bg-chat-input-bg px-3 py-2 text-xs text-text-color outline-none"
+                    @click="($event.target as HTMLInputElement).select()"
+                  />
+                  <button
+                    class="shrink-0 rounded-lg bg-color-bg-ac px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-color-bg-ac/90"
+                    @click="copyInviteLink"
+                  >
+                    {{ linkCopied ? t("shareGroup.copied") : t("shareGroup.copyLink") }}
+                  </button>
+                </div>
+                <p class="mt-1.5 text-[11px] text-text-on-main-bg-color">{{ t("shareGroup.publicGroupHint") }}</p>
+              </template>
+              <template v-else>
+                <p class="text-xs text-text-on-main-bg-color">
+                  {{ isAdmin ? t("shareGroup.enablePublic") : t("shareGroup.publicGroupHint") }}
+                </p>
+              </template>
+            </div>
+
             <!-- Contact info section (1:1 DM only) -->
             <div v-if="!room.isGroup && peerData" class="border-t border-neutral-grad-0 px-4 py-3">
               <!-- About -->
@@ -517,7 +591,7 @@ const openGallery = (tab: "media" | "files" | "links" | "voice" = "media") => {
                   <svg v-if="!copiedAddress" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-color-txt-gray transition-colors group-hover:text-text-on-main-bg-color">
                     <rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
                   </svg>
-                  <span v-else class="text-xs text-green-500">{{ t("chatInfo.copied") }}</span>
+                  <span v-else class="text-xs text-color-good">{{ t("chatInfo.copied") }}</span>
                 </button>
               </div>
             </div>

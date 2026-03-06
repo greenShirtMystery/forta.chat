@@ -9,6 +9,11 @@ import Avatar from "@/shared/ui/avatar/Avatar.vue";
 const { searchQuery, searchResults, isSearching, isCreatingRoom, debouncedSearch, getOrCreateRoom } = useContacts();
 const chatStore = useChatStore();
 const { t } = useI18n();
+const searchInputRef = ref<HTMLInputElement>();
+
+onMounted(() => {
+  nextTick(() => searchInputRef.value?.focus());
+});
 
 const emit = defineEmits<{
   select: [address: string];
@@ -58,6 +63,7 @@ const matchingRooms = computed(() => {
 <template>
   <div class="flex flex-col gap-2">
     <input
+      ref="searchInputRef"
       v-model="searchQuery"
       :placeholder="t('contactSearch.placeholder')"
       class="rounded-lg bg-chat-input-bg px-3 py-2 text-sm text-text-color outline-none placeholder:text-neutral-grad-2"

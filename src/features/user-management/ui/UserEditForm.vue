@@ -225,7 +225,7 @@ watch(
         :disabled="authStore.isEditingUserData || !hasChanges"
         class="mx-auto flex h-11 w-full max-w-xs items-center justify-center rounded-xl text-sm font-semibold transition-all disabled:opacity-40"
         :class="saveSuccess
-          ? 'bg-green-500 text-white'
+          ? 'bg-color-good text-white'
           : 'bg-color-bg-ac text-text-on-bg-ac-color hover:opacity-90'"
       >
         <template v-if="saveSuccess">

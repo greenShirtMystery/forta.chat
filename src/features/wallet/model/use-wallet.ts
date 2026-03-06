@@ -1,5 +1,6 @@
 import { getPocketnetInstance } from "@/shared/api/sdk-bridge";
 import { createAppInitializer } from "@/app/providers/initializers/app-initializer";
+import { useAuthStore } from "@/entities/auth";
 
 export interface UTXO {
   txid: string;
@@ -88,10 +89,13 @@ function buildTx(
 }
 
 export function useWallet() {
+  const authStore = useAuthStore();
+  // Fully reactive: authStore fields are Vue refs, so the button
+  // appears as soon as the user is authenticated + platform globals exist.
   const isAvailable = computed(() => {
+    if (!authStore.address || !authStore.isAuthenticated) return false;
     try {
-      const inst = getPocketnetInstance();
-      return !!(inst.user.address.value && inst.user.keys);
+      return typeof bitcoin !== "undefined" && typeof Api !== "undefined";
     } catch {
       return false;
     }

@@ -48,7 +48,7 @@ const onIframeError = () => {
         class="h-full w-full object-cover"
         loading="lazy"
       />
-      <div v-else class="flex h-full w-full items-center justify-center bg-gray-900">
+      <div v-else class="flex h-full w-full items-center justify-center bg-black">
         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1" opacity="0.3">
           <rect x="2" y="2" width="20" height="20" rx="2" />
           <path d="M10 8l6 4-6 4V8z" fill="white" opacity="0.3" />
@@ -67,12 +67,12 @@ const onIframeError = () => {
       </button>
     </template>
 
-    <div v-if="error" class="absolute inset-0 flex items-center justify-center bg-gray-900">
+    <div v-if="error" class="absolute inset-0 flex items-center justify-center bg-black">
       <a
         :href="url"
         target="_blank"
         rel="noopener noreferrer"
-        class="text-sm text-blue-400 underline"
+        class="text-sm text-color-txt-ac underline"
         @click.stop
       >Open video externally</a>
     </div>

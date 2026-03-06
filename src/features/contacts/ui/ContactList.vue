@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, nextTick } from "vue";
 import { useChatStore } from "@/entities/chat";
 import type { ChatRoom, Message } from "@/entities/chat";
 import { MessageType, MessageStatus } from "@/entities/chat";
@@ -121,6 +121,7 @@ const resolveRoomName = (room: ChatRoom): string => {
   return roomNameMap.value[room.id] ?? cleanMatrixIds(room.name);
 };
 
+
 /** Format last message preview with type-aware icons */
 const formatPreview = (msg: Message | undefined, room: ChatRoom): string => {
   if (!msg) return t("contactList.noMessages");
@@ -218,8 +219,11 @@ const allFilteredRooms = computed(() => {
 const filteredRooms = computed(() => allFilteredRooms.value.slice(0, displayLimit.value));
 const hasMoreRooms = computed(() => displayLimit.value < allFilteredRooms.value.length);
 
-// Reset page when filter changes
-watch(() => props.filter, () => { displayLimit.value = PAGE_SIZE; });
+// Reset page when filter changes and reload visible profiles
+watch(() => props.filter, () => {
+  displayLimit.value = PAGE_SIZE;
+  nextTick(loadVisibleProfiles);
+});
 
 const loadMoreRooms = () => {
   if (hasMoreRooms.value) {
@@ -228,15 +232,37 @@ const loadMoreRooms = () => {
 };
 
 const scrollerRef = ref<InstanceType<typeof RecycleScroller>>();
+const ITEM_HEIGHT = 68;
+const PREFETCH_BUFFER = 10; // extra rooms to prefetch ahead of viewport
 
-const onScrollerScroll = () => {
-  if (!hasMoreRooms.value) return;
+/** Calculate which rooms are visible + buffer, then load their profiles */
+const loadVisibleProfiles = () => {
   const el = scrollerRef.value?.$el as HTMLElement | undefined;
   if (!el) return;
-  const { scrollTop, scrollHeight, clientHeight } = el;
-  if (scrollHeight - scrollTop - clientHeight < 200) {
-    loadMoreRooms();
+  const { scrollTop, clientHeight } = el;
+  const firstIdx = Math.max(0, Math.floor(scrollTop / ITEM_HEIGHT) - 2);
+  const lastIdx = Math.min(
+    filteredRooms.value.length - 1,
+    Math.ceil((scrollTop + clientHeight) / ITEM_HEIGHT) + PREFETCH_BUFFER,
+  );
+  const visibleIds: string[] = [];
+  for (let i = firstIdx; i <= lastIdx; i++) {
+    visibleIds.push(filteredRooms.value[i].id);
   }
+  if (visibleIds.length > 0) chatStore.loadProfilesForRoomIds(visibleIds);
+};
+
+const onScrollerScroll = () => {
+  // Load more rooms (infinite scroll)
+  const el = scrollerRef.value?.$el as HTMLElement | undefined;
+  if (el && hasMoreRooms.value) {
+    const { scrollTop, scrollHeight, clientHeight } = el;
+    if (scrollHeight - scrollTop - clientHeight < 200) {
+      loadMoreRooms();
+    }
+  }
+  // Lazy-load profiles for newly visible rooms
+  loadVisibleProfiles();
 };
 
 // Attach native scroll listener to RecycleScroller's root element
@@ -247,7 +273,11 @@ const attachScrollListener = () => {
   scrollEl?.addEventListener("scroll", onScrollerScroll, { passive: true });
 };
 
-onMounted(attachScrollListener);
+onMounted(() => {
+  attachScrollListener();
+  // Initial viewport profile load
+  nextTick(loadVisibleProfiles);
+});
 watch(scrollerRef, attachScrollListener);
 onUnmounted(() => { scrollEl?.removeEventListener("scroll", onScrollerScroll); });
 
@@ -416,14 +446,14 @@ const getRoomLongPress = (room: ChatRoom) => {
               <span
                 v-else-if="getRoomDraft(room.id) && room.id !== chatStore.activeRoomId"
                 class="truncate text-sm"
-              ><span class="font-medium text-red-400">{{ t("contactList.draft") }}:</span> <span class="text-text-on-main-bg-color">{{ getRoomDraft(room.id) }}</span></span>
+              ><span class="font-medium text-color-bad">{{ t("contactList.draft") }}:</span> <span class="text-text-on-main-bg-color">{{ getRoomDraft(room.id) }}</span></span>
               <span v-else-if="room.membership === 'invite'" class="truncate text-sm italic text-color-bg-ac">
                 Invitation to chat
               </span>
               <span
                 v-else-if="room.lastMessage?.callInfo"
                 class="truncate text-sm"
-                :class="room.lastMessage.callInfo.missed ? 'text-red-400' : 'italic text-text-on-main-bg-color'"
+                :class="room.lastMessage.callInfo.missed ? 'text-color-bad' : 'italic text-text-on-main-bg-color'"
               >
                 {{ formatPreview(room.lastMessage, room) }}
               </span>

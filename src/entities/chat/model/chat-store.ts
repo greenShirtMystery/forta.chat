@@ -278,7 +278,10 @@ export const useChatStore = defineStore(NAMESPACE, () => {
   const debouncedCacheRooms = () => {
     if (cacheTimer) clearTimeout(cacheTimer);
     cacheTimer = setTimeout(() => {
-      cacheRooms(rooms.value).catch(() => {});
+      // Never cache empty rooms — protects against premature calls before sync completes
+      if (rooms.value.length > 0) {
+        cacheRooms(rooms.value).catch(() => {});
+      }
       cacheTimer = null;
     }, 5000);
   };
@@ -578,10 +581,14 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     rooms.value = newRooms;
     rebuildRoomsMap();
 
-    // Build user display name cache from room members
+    // Build user display name cache from room members (sync — no API calls)
     // Only run loadMissingMembers once AND only when we have actual rooms
     const willLoadMembers = !membersLoadedOnce && interactiveRooms.length > 0;
     updateDisplayNames(interactiveRooms, kit, willLoadMembers);
+
+    // Eagerly load profiles for the first viewport of rooms (top ~15)
+    const viewportIds = sortedRooms.value.slice(0, 15).map(r => r.id);
+    if (viewportIds.length > 0) loadProfilesForRoomIds(viewportIds);
 
     // One-time: load members for rooms with stale lazy-load cache (only 1 member = self)
     if (willLoadMembers) {
@@ -595,33 +602,16 @@ export const useChatStore = defineStore(NAMESPACE, () => {
   };
 
   /** One-time: load members from server for rooms with only self as member.
-   *  Also loads user profiles for ALL room members (including rooms with summary.members).
-   *  Collects all updates, then applies once at the end to avoid reactive cascades. */
+   *  Updates room member lists + avatars. Profile loading is handled lazily by loadProfilesForRoomIds. */
   const loadMissingMembers = async (matrixRooms: any[], kit: MatrixKit, myUserId: string) => {
     const myHexId = getmatrixid(myUserId);
     const toLoad: any[] = [];
-    const allAddresses = new Set<string>();
 
-    // Collect addresses from ALL rooms + find rooms that need member loading
+    // Find rooms that need member loading (only self as member)
     for (const mr of matrixRooms) {
       const members = kit.getRoomMembers(mr);
       const memberIds = members.map((m: Record<string, unknown>) => getmatrixid(m.userId as string));
       const others = memberIds.filter(id => id !== myHexId);
-
-      // Collect addresses from every room member
-      for (const mid of memberIds) {
-        const addr = hexDecode(mid);
-        if (/^[A-Za-z0-9]+$/.test(addr)) allAddresses.add(addr);
-      }
-
-      // Also collect from our cached ChatRoom members
-      const room = getRoomById(mr.roomId as string);
-      if (room) {
-        for (const mid of room.members) {
-          const addr = hexDecode(mid);
-          if (/^[A-Za-z0-9]+$/.test(addr)) allAddresses.add(addr);
-        }
-      }
 
       if (others.length === 0 && typeof mr.loadMembersIfNeeded === "function") {
         toLoad.push(mr);
@@ -638,24 +628,9 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         }));
         await new Promise(r => setTimeout(r, 0));
       }
-
-      // Collect newly loaded member addresses + room updates
-      for (const mr of toLoad) {
-        const members = kit.getRoomMembers(mr);
-        for (const m of members) {
-          const addr = hexDecode(getmatrixid((m as Record<string, unknown>).userId as string));
-          if (/^[A-Za-z0-9]+$/.test(addr)) allAddresses.add(addr);
-        }
-      }
     }
 
-    // Phase 2: Load ALL user profiles in one batch
-    const uStore = useUserStore();
-    if (allAddresses.size > 0) {
-      await uStore.loadUsersBatch([...allAddresses]);
-    }
-
-    // Phase 3: Apply room member updates from loaded rooms
+    // Phase 2: Apply room member updates from loaded rooms
     const roomUpdates: Array<{ room: ChatRoom; memberIds: string[]; avatar?: string }> = [];
     for (const mr of toLoad) {
       const roomId = mr.roomId as string;
@@ -663,6 +638,15 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       if (!room) continue;
       const members = kit.getRoomMembers(mr);
       const memberIds = members.map((m: Record<string, unknown>) => getmatrixid(m.userId as string));
+
+      // Update matrixRoomAddresses with newly loaded members
+      const addrs: string[] = [];
+      for (const m of members) {
+        const addr = matrixIdToAddress((m as Record<string, unknown>).userId as string);
+        if (addr && /^[A-Za-z0-9]+$/.test(addr)) addrs.push(addr);
+      }
+      if (addrs.length > 0) matrixRoomAddresses.set(roomId, addrs);
+
       if (memberIds.length <= room.members.length) continue;
       let avatar: string | undefined;
       if (!room.isGroup) {
@@ -682,7 +666,17 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       room.members = memberIds;
       if (avatar) room.avatar = avatar;
     }
-    if (roomUpdates.length > 0) triggerRef(rooms);
+    if (roomUpdates.length > 0) {
+      triggerRef(rooms);
+    }
+
+    // Re-request profiles for ALL rooms that were loaded (not just updated)
+    // This ensures rooms that initially had no members now get profiles loaded
+    if (toLoad.length > 0) {
+      const loadedIds = toLoad.map((mr: any) => mr.roomId as string);
+      for (const id of loadedIds) profilesRequestedForRooms.delete(id);
+      loadProfilesForRoomIds(loadedIds);
+    }
 
     // Persist and signal ready
     debouncedCacheRooms();
@@ -755,6 +749,11 @@ export const useChatStore = defineStore(NAMESPACE, () => {
 
     // Update display names only for changed rooms
     updateDisplayNames(changedMatrixRooms, kit);
+
+    // Load profiles for changed rooms (lazy — skips already-requested)
+    if (changedMatrixRooms.length > 0) {
+      loadProfilesForRoomIds(changedMatrixRooms.map((r: any) => r.roomId as string));
+    }
 
     // Decrypt previews only for changed rooms
     if (changedMatrixRooms.length > 0) {
@@ -841,13 +840,18 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     return chatRoom;
   };
 
-  /** Update display name cache from room members and batch-load user profiles.
+  /** Per-room addresses collected from Matrix SDK (most complete source).
+   *  Populated by updateDisplayNames, consumed by loadProfilesForRoomIds. */
+  const matrixRoomAddresses = new Map<string, string[]>();
+
+  /** Update display name cache from Matrix SDK room members.
+   *  Collects addresses per room for later viewport-based profile loading.
    *  @param skipNamesReady — if true, don't set namesReady (loadMissingMembers will do it) */
   const updateDisplayNames = (matrixRooms: any[], kit: MatrixKit, skipNamesReady = false) => {
-    const uStore = useUserStore();
-    const addressesToLoad: string[] = [];
     for (const r of matrixRooms) {
+      const roomId = r.roomId as string;
       const members = kit.getRoomMembers(r);
+      const roomAddrs: string[] = [];
       for (const m of members) {
         const addr = matrixIdToAddress((m as Record<string, unknown>).userId as string);
         const dn = (m as Record<string, unknown>).rawDisplayName as string
@@ -855,18 +859,57 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         if (addr && dn && dn !== addr) {
           userDisplayNames.value[addr] = dn;
         }
-        // Collect valid addresses for batch loading (like original bastyon-chat usersInfo)
         if (addr && /^[A-Za-z0-9]+$/.test(addr)) {
-          addressesToLoad.push(addr);
+          roomAddrs.push(addr);
         }
       }
+      if (roomAddrs.length > 0) matrixRoomAddresses.set(roomId, roomAddrs);
     }
-    // Batch-load all user profiles in one API call
-    if (addressesToLoad.length > 0) {
-      uStore.loadUsersBatch([...new Set(addressesToLoad)])
-        .finally(() => { if (!skipNamesReady) namesReady.value = true; });
-    } else if (!skipNamesReady && rooms.value.length > 0) {
+    if (!skipNamesReady && rooms.value.length > 0) {
       namesReady.value = true;
+    }
+  };
+
+  /** Set of room IDs whose member profiles have already been requested */
+  const profilesRequestedForRooms = new Set<string>();
+
+  /** Load user profiles for members of specific rooms (viewport-based lazy loading).
+   *  Uses Matrix SDK addresses when available (most complete), falls back to ChatRoom.members.
+   *  Only marks a room as "requested" if we actually found addresses to load or all are cached. */
+  const loadProfilesForRoomIds = (roomIds: string[]) => {
+    const uStore = useUserStore();
+    const addressesToLoad: string[] = [];
+    for (const roomId of roomIds) {
+      if (profilesRequestedForRooms.has(roomId)) continue;
+
+      // Prefer Matrix SDK addresses (populated by updateDisplayNames)
+      const sdkAddrs = matrixRoomAddresses.get(roomId);
+      if (sdkAddrs && sdkAddrs.length > 0) {
+        profilesRequestedForRooms.add(roomId);
+        for (const addr of sdkAddrs) {
+          if (!uStore.users[addr]) addressesToLoad.push(addr);
+        }
+        continue;
+      }
+
+      // Fallback: decode from ChatRoom.members (for cached rooms without Matrix data)
+      const room = getRoomById(roomId);
+      if (!room) continue;
+      let foundAddrs = false;
+      for (const hexId of room.members) {
+        try {
+          const addr = hexDecode(hexId);
+          if (addr && /^[A-Za-z0-9]+$/.test(addr)) {
+            foundAddrs = true;
+            if (!uStore.users[addr]) addressesToLoad.push(addr);
+          }
+        } catch { /* ignore invalid hex */ }
+      }
+      // Only mark as requested if we found member addresses (otherwise retry later when members load)
+      if (foundAddrs) profilesRequestedForRooms.add(roomId);
+    }
+    if (addressesToLoad.length > 0) {
+      uStore.loadUsersBatch([...new Set(addressesToLoad)]);
     }
   };
 
@@ -940,7 +983,8 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         if (Date.now() - failInfo.lastAttempt < DECRYPT_RETRY_DELAY) continue;
       }
       const room = getRoomById(roomId);
-      if (!room?.lastMessage || room.lastMessage.content !== "[encrypted]") continue;
+      const lmc = room?.lastMessage?.content;
+      if (!lmc || (lmc !== "[encrypted]" && lmc !== "[no room crypto]")) continue;
       toDecrypt.push({ roomId, matrixRoom });
     }
     if (toDecrypt.length === 0) return;
@@ -1037,6 +1081,10 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     if (roomId) {
       const room = getRoomById(roomId);
       if (room) room.unreadCount = 0;
+
+      // Ensure member profiles are loaded for the active room
+      profilesRequestedForRooms.delete(roomId);
+      loadProfilesForRoomIds([roomId]);
 
       // Don't auto-join invited rooms — let the user preview first
       if (room?.membership === "invite") return;
@@ -1379,6 +1427,49 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       return { myLevel, levels: users };
     } catch {
       return { myLevel: 0, levels: {} };
+    }
+  };
+
+  /** Check if room has public join rules */
+  const isRoomPublic = (roomId: string): boolean => {
+    try {
+      const matrixService = getMatrixClientService();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const matrixRoom = matrixService.getRoom(roomId) as any;
+      if (!matrixRoom) return false;
+      const joinEvent = matrixRoom.currentState?.getStateEvents?.("m.room.join_rules", "");
+      const rule = joinEvent?.getContent?.()?.join_rule ?? joinEvent?.event?.content?.join_rule;
+      return rule === "public";
+    } catch {
+      return false;
+    }
+  };
+
+  /** Toggle room between public/private join rules (admin only) */
+  const setRoomPublic = async (roomId: string, isPublic: boolean): Promise<boolean> => {
+    try {
+      const matrixService = getMatrixClientService();
+      await matrixService.sendStateEvent(roomId, "m.room.join_rules", {
+        join_rule: isPublic ? "public" : "invite",
+      }, "");
+      return true;
+    } catch (e) {
+      console.warn("[chat-store] setRoomPublic error:", e);
+      return false;
+    }
+  };
+
+  /** Join a room by ID (for invite link flow) */
+  const joinRoomById = async (roomId: string): Promise<boolean> => {
+    try {
+      const matrixService = getMatrixClientService();
+      await matrixService.joinRoom(roomId);
+      await refreshRoomsNow();
+      setActiveRoom(roomId);
+      return true;
+    } catch (e) {
+      console.warn("[chat-store] joinRoomById error:", e);
+      return false;
     }
   };
 
@@ -2807,12 +2898,16 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         }
         // Room names are NOT patched here — resolved at render time.
         rooms.value = cachedRooms;
+        rebuildRoomsMap();
         // User profiles loaded synchronously from localStorage — check if enough for name resolution
         const uStore = useUserStore();
         const cachedUserCount = Object.keys(uStore.users).length;
         if (cachedUserCount > 5) {
           namesReady.value = true;
         }
+        // Eagerly load profiles for first viewport of cached rooms
+        const viewportIds = sortedRooms.value.slice(0, 15).map(r => r.id);
+        if (viewportIds.length > 0) loadProfilesForRoomIds(viewportIds);
       }
     } catch (e) {
       console.warn("[chat-store] loadCachedRooms failed:", e);
@@ -2879,6 +2974,8 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     handleRedactionEvent,
     handleTimelineEvent,
     inviteMember,
+    isRoomPublic,
+    joinRoomById,
     banMember,
     getBannedMembers,
     isMemberMuted,
@@ -2886,6 +2983,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     leaveGroup,
     loadCachedMessages,
     loadCachedRooms,
+    loadProfilesForRoomIds,
     loadAllMessages,
     loadPinnedMessages,
     loadMoreMessages,
@@ -2922,6 +3020,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     setMemberPowerLevel,
     setMessages,
     setRoomAvatar,
+    setRoomPublic,
     setRoomTopic,
     setTypingUsers,
     sortedRooms,
