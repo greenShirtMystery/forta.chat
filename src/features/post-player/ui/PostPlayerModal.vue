@@ -10,6 +10,7 @@ import PostAuthor from "./PostAuthor.vue";
 import PostActions from "./PostActions.vue";
 import PostComments from "./PostComments.vue";
 import DonateModal from "@/features/wallet/ui/DonateModal.vue";
+import SharePostPicker from "./SharePostPicker.vue";
 import { parseVideoUrl } from "@/shared/lib/video-embed";
 
 interface Props {
@@ -55,29 +56,10 @@ const handleBoost = () => {
   openBoost(props.post.address);
 };
 
-const shareCopied = ref(false);
+const showSharePicker = ref(false);
 
-const handleShare = async () => {
-  const link = `bastyon://post?s=${props.post.txid}`;
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(link);
-    } else {
-      // Fallback for Electron / non-secure context
-      const ta = document.createElement("textarea");
-      ta.value = link;
-      ta.style.position = "fixed";
-      ta.style.left = "-9999px";
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand("copy");
-      document.body.removeChild(ta);
-    }
-    shareCopied.value = true;
-    setTimeout(() => { shareCopied.value = false; }, 2000);
-  } catch (e) {
-    console.error("[PostPlayerModal] share copy failed:", e);
-  }
+const handleShare = () => {
+  showSharePicker.value = true;
 };
 
 const scrollToComments = () => {
@@ -178,7 +160,6 @@ onUnmounted(() => {
             <PostActions
               :total-comments="comments.length"
               :is-own-post="isOwnPost"
-              :share-copied="shareCopied"
               @boost="handleBoost"
               @share="handleShare"
               @scroll-to-comments="scrollToComments"
@@ -203,6 +184,14 @@ onUnmounted(() => {
         :receiver-address="boostAddress"
         :receiver-name="authorName"
         @close="closeBoost"
+      />
+
+      <!-- Share to chat picker -->
+      <SharePostPicker
+        :show="showSharePicker"
+        :post-link="`bastyon://post?s=${post.txid}`"
+        :post-title="post.caption"
+        @close="showSharePicker = false"
       />
     </div>
   </Teleport>
