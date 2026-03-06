@@ -274,9 +274,8 @@ watch(
       const hasCached = chatStore.activeMessages.length > 0;
 
       if (hasCached) {
-        // Cache hit — show messages immediately, no opacity fade
+        // Cache hit — keep scroller hidden until scroll position is set
         loading.value = false;
-        settled.value = true;
         await nextTick();
 
         // Restore scroll position or go to bottom
@@ -285,17 +284,23 @@ watch(
           const el = getScrollContainer();
           if (el) el.scrollTop = el.scrollHeight - el.clientHeight - saved.distFromBottom;
           savedScrollPositions.delete(roomId);
-        } else {
-          scrollToBottom();
-        }
-
-        await nextTick();
-        requestAnimationFrame(() => {
-          scrollToBottom(false, () => {
+          // Reveal after restoring saved position
+          await nextTick();
+          requestAnimationFrame(() => {
+            settled.value = true;
             switching.value = false;
             checkScroll();
           });
-        });
+        } else {
+          await nextTick();
+          requestAnimationFrame(() => {
+            scrollToBottom(false, () => {
+              settled.value = true;
+              switching.value = false;
+              checkScroll();
+            });
+          });
+        }
 
         // 2. Fetch fresh messages from server in background (silent update)
         loadMessages(roomId).catch(() => {});
@@ -314,18 +319,22 @@ watch(
           const el = getScrollContainer();
           if (el) el.scrollTop = el.scrollHeight - el.clientHeight - saved.distFromBottom;
           savedScrollPositions.delete(roomId);
-        } else {
-          scrollToBottom();
-        }
-
-        await nextTick();
-        requestAnimationFrame(() => {
-          scrollToBottom(false, () => {
+          await nextTick();
+          requestAnimationFrame(() => {
             settled.value = true;
             switching.value = false;
             checkScroll();
           });
-        });
+        } else {
+          await nextTick();
+          requestAnimationFrame(() => {
+            scrollToBottom(false, () => {
+              settled.value = true;
+              switching.value = false;
+              checkScroll();
+            });
+          });
+        }
       }
     }
   },
@@ -590,7 +599,7 @@ defineExpose({ scrollToMessage, setSearchQuery });
           <!-- Date separator (use padding instead of margin — DynamicScroller ignores margins) -->
           <div
             v-if="item.type === 'date-separator'"
-            class="flex justify-center py-3"
+            class="mx-auto flex max-w-6xl justify-center py-3"
             :data-date-label="item.label"
           >
             <span class="rounded-full bg-neutral-grad-0/80 px-3 py-1 text-xs text-text-on-main-bg-color backdrop-blur-sm">
@@ -601,6 +610,7 @@ defineExpose({ scrollToMessage, setSearchQuery });
           <!-- Call event card (bubble-style, aligned like a message) -->
           <div
             v-else-if="item.type === 'message' && item.message?.callInfo"
+            class="mx-auto max-w-6xl"
             :data-message-id="item.message.id"
             :style="(item.index ?? 0) > 0 ? { paddingTop: 'var(--message-spacing)' } : {}"
           >
@@ -612,7 +622,7 @@ defineExpose({ scrollToMessage, setSearchQuery });
               <div v-if="item.message.senderId !== authStore.address && themeStore.showAvatarsInChat" class="shrink-0 self-end">
                 <UserAvatar :address="item.message.senderId" size="sm" />
               </div>
-              <div class="min-w-0 max-w-[70%]">
+              <div class="min-w-0 max-w-[80%]">
                 <CallEventCard
                   :message="item.message"
                   :is-own="item.message.senderId === authStore.address"
@@ -625,7 +635,7 @@ defineExpose({ scrollToMessage, setSearchQuery });
           <!-- System message (join/leave/kick/name change) -->
           <div
             v-else-if="item.type === 'message' && item.message && item.message.type === MessageType.system"
-            class="flex justify-center py-2"
+            class="mx-auto flex max-w-6xl justify-center py-2"
             :data-message-id="item.message.id"
           >
             <span class="rounded-full bg-neutral-grad-0/60 px-3 py-1 text-center text-[11px] text-text-on-main-bg-color">
@@ -636,10 +646,11 @@ defineExpose({ scrollToMessage, setSearchQuery });
           <!-- Message (wrapped with padding — DynamicScroller ignores margins for height calc) -->
           <div
             v-else-if="item.type === 'message' && item.message"
-            :class="getMsgEnterClass(item.message)"
+            :class="[getMsgEnterClass(item.message), { 'context-highlight': contextMenu.show && contextMenu.message?.id === item.message.id }]"
             :style="(item.index ?? 0) > 0 ? { paddingTop: 'var(--message-spacing)' } : {}"
             :data-message-id="item.message.id"
           >
+            <div class="mx-auto max-w-6xl">
             <MessageBubble
               :key="item.message.id + (item.message.deleted ? '-del' : '')"
               :message="item.message"
@@ -660,10 +671,11 @@ defineExpose({ scrollToMessage, setSearchQuery });
                 <UserAvatar :address="item.message.senderId" size="sm" />
               </template>
             </MessageBubble>
+            </div>
           </div>
 
           <!-- Typing indicator -->
-          <div v-else-if="item.type === 'typing'" class="flex items-center gap-2 px-10 py-1">
+          <div v-else-if="item.type === 'typing'" class="mx-auto flex max-w-6xl items-center gap-2 px-10 py-1">
             <div class="flex gap-0.5">
               <span class="h-1.5 w-1.5 animate-bounce rounded-full bg-text-on-main-bg-color [animation-delay:-0.3s]" />
               <span class="h-1.5 w-1.5 animate-bounce rounded-full bg-text-on-main-bg-color [animation-delay:-0.15s]" />
@@ -794,11 +806,17 @@ defineExpose({ scrollToMessage, setSearchQuery });
 
 <style>
 @keyframes search-flash {
-  0% { background-color: rgba(var(--color-bg-ac-rgb, 59 130 246), 0.25); }
+  0% { background-color: rgba(var(--color-bg-ac-rgb, 59, 130, 246), 0.25); }
   100% { background-color: transparent; }
 }
 .search-highlight {
   animation: search-flash 1.5s ease-out;
   border-radius: 8px;
+}
+
+/* Context menu highlight — full-width background */
+.context-highlight {
+  background-color: rgba(var(--color-bg-ac-rgb, 59, 130, 246), 0.08);
+  transition: background-color 0.15s ease;
 }
 </style>

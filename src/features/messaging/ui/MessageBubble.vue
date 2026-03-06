@@ -96,8 +96,8 @@ const imagePlaceholderStyle = computed(() => {
   const w = fi?.w;
   const h = fi?.h;
   if (w && h) {
-    const maxW = 320;
-    const maxH = 360;
+    const maxW = 420;
+    const maxH = 460;
     const scale = Math.min(maxW / w, maxH / h, 1);
     return { width: `${Math.round(w * scale)}px`, height: `${Math.round(h * scale)}px` };
   }
@@ -109,8 +109,8 @@ const imageStyle = computed(() => {
   const w = fi?.w;
   const h = fi?.h;
   if (w && h) {
-    const maxW = 320;
-    const maxH = 360;
+    const maxW = 420;
+    const maxH = 460;
     const scale = Math.min(maxW / w, maxH / h, 1);
     return { width: `${Math.round(w * scale)}px`, height: `${Math.round(h * scale)}px` };
   }
@@ -252,7 +252,7 @@ const replyPreviewText = computed(() => {
     <div v-else-if="!chatStore.selectionMode && !props.isOwn && themeStore.showAvatarsInChat" class="w-8 shrink-0" />
 
     <!-- Bubble container -->
-    <div class="relative min-w-0 max-w-[70%] overflow-hidden">
+    <div class="relative min-w-0 max-w-[80%] overflow-hidden">
       <!-- Reply action (on hover) -->
       <button
         class="absolute top-1/2 hidden h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full text-text-on-main-bg-color opacity-0 transition-opacity hover:bg-neutral-grad-0 group-hover:flex group-hover:opacity-100"
@@ -323,7 +323,7 @@ const replyPreviewText = computed(() => {
           >
             Failed to load image
           </div>
-          <img v-else-if="fileState.objectUrl" :src="fileState.objectUrl" :alt="message.fileInfo?.name" class="block max-h-[360px] max-w-full object-cover" :style="imageStyle" />
+          <img v-else-if="fileState.objectUrl" :src="fileState.objectUrl" :alt="message.fileInfo?.name" class="block max-h-[460px] max-w-full object-cover" :style="imageStyle" />
           <!-- Sending overlay -->
           <div v-if="isSending" class="absolute inset-0 flex items-center justify-center bg-black/30">
             <div class="h-8 w-8 animate-spin rounded-full border-3 border-white border-t-transparent" />

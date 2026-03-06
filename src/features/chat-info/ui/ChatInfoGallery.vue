@@ -159,7 +159,7 @@ const underlineStyle = computed(() => {
       class="flex items-center gap-2 border-b border-neutral-grad-0 px-2 py-3"
     >
       <button
-        class="flex h-8 w-8 items-center justify-center rounded-full transition-colors hover:bg-neutral-grad-0"
+        class="flex h-8 w-8 items-center justify-center rounded-full text-text-color transition-colors hover:bg-neutral-grad-0"
         @click="emit('back')"
       >
         <svg

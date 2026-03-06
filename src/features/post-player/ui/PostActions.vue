@@ -16,7 +16,7 @@ const { t } = useI18n();
 </script>
 
 <template>
-  <div class="flex items-center gap-3 border-t border-gray-200/10 pt-3">
+  <div class="flex items-center gap-3 border-t border-neutral-grad-0 pt-3">
     <button
       v-if="!isOwnPost"
       class="flex items-center gap-1.5 rounded-lg bg-color-bg-ac/10 px-3 py-1.5 text-xs font-medium text-color-bg-ac transition-colors hover:bg-color-bg-ac/20"
@@ -29,7 +29,7 @@ const { t } = useI18n();
     </button>
 
     <button
-      class="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs text-gray-400 transition-colors hover:bg-gray-500/10 hover:text-gray-300"
+      class="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs text-text-on-main-bg-color transition-colors hover:bg-neutral-grad-0 hover:text-text-color"
       @click="emit('scrollToComments')"
     >
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -39,7 +39,7 @@ const { t } = useI18n();
     </button>
 
     <button
-      class="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs text-gray-400 transition-colors hover:bg-gray-500/10 hover:text-gray-300"
+      class="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs text-text-on-main-bg-color transition-colors hover:bg-neutral-grad-0 hover:text-text-color"
       @click="emit('share')"
     >
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

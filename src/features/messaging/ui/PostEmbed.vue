@@ -23,7 +23,6 @@ const videoInfo = computed(() => (post.value?.url ? parseVideoUrl(post.value.url
 const firstImage = computed(() => {
   if (!post.value?.images?.length) return null;
   const img = post.value.images[0];
-  // Bastyon images are usually stored as hashes — construct URL
   if (img.startsWith("http")) return img;
   return `https://bastyon.com/images/${img}`;
 });
@@ -40,18 +39,14 @@ const isArticle = computed(() => post.value?.settings?.v === "a");
 const postUrl = computed(() => `bastyon://post?s=${props.txid}`);
 
 onMounted(async () => {
-  console.log("[PostEmbed] mounting, txid:", props.txid);
   try {
     const data = await authStore.loadPost(props.txid);
-    console.log("[PostEmbed] loadPost result:", data);
     if (!data) {
-      console.warn("[PostEmbed] no data for txid:", props.txid);
       error.value = true;
       return;
     }
     post.value = data;
 
-    // Load author info
     if (data.address) {
       await authStore.loadUsersInfo([data.address]);
       const user = authStore.getBastyonUserData(data.address);
@@ -91,10 +86,10 @@ const openVideo = (e: Event) => {
   <!-- Loading skeleton -->
   <div
     v-if="loading"
-    class="my-1 flex max-w-sm items-center gap-2 rounded-xl p-3"
-    :class="isOwn ? 'bg-white/10' : 'bg-color-bg-ac/8'"
+    class="my-1 flex w-full max-w-md items-center gap-3 rounded-xl p-3"
+    :class="isOwn ? 'bg-white/10' : 'bg-neutral-grad-0/60'"
   >
-    <div class="h-4 w-4 animate-pulse rounded-full" :class="isOwn ? 'bg-white/20' : 'bg-black/10'" />
+    <div class="h-4 w-4 animate-pulse rounded-full bg-current opacity-20" />
     <span class="text-xs opacity-50">{{ t("post.loading") }}</span>
   </div>
 
@@ -111,8 +106,8 @@ const openVideo = (e: Event) => {
   <!-- Post card -->
   <div
     v-else-if="post"
-    class="my-1 max-w-sm cursor-pointer overflow-hidden rounded-xl"
-    :class="isOwn ? 'bg-white/10' : 'bg-color-bg-ac/8'"
+    class="group my-1 w-full max-w-md cursor-pointer overflow-hidden rounded-xl transition-shadow hover:shadow-lg"
+    :class="isOwn ? 'bg-white/10 hover:bg-white/[0.14]' : 'bg-neutral-grad-0/60 hover:bg-neutral-grad-0/80'"
     @click="openPost"
   >
     <!-- Video thumbnail -->
@@ -120,16 +115,18 @@ const openVideo = (e: Event) => {
       <img
         :src="videoInfo.thumbUrl"
         alt=""
-        class="h-36 w-full object-cover"
+        class="h-40 w-full object-cover"
         loading="lazy"
       />
       <button
-        class="absolute inset-0 flex items-center justify-center bg-black/30 transition-colors hover:bg-black/40"
+        class="absolute inset-0 flex items-center justify-center bg-black/30 transition-colors hover:bg-black/20"
         @click="openVideo"
       >
-        <svg width="40" height="40" viewBox="0 0 24 24" fill="white">
-          <path d="M8 5v14l11-7z" />
-        </svg>
+        <div class="flex h-12 w-12 items-center justify-center rounded-full bg-white/90 shadow-lg">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="#000">
+            <path d="M8 5v14l11-7z" />
+          </svg>
+        </div>
       </button>
     </div>
 
@@ -138,7 +135,7 @@ const openVideo = (e: Event) => {
       v-else-if="firstImage"
       :src="firstImage"
       alt=""
-      class="max-h-48 w-full object-cover"
+      class="max-h-52 w-full object-cover"
       loading="lazy"
     />
 
@@ -209,8 +206,8 @@ const openVideo = (e: Event) => {
 
       <!-- Open link -->
       <div
-        class="flex items-center gap-1 text-[10px]"
-        :class="isOwn ? 'text-white/40' : 'text-text-on-main-bg-color'"
+        class="flex items-center gap-1 text-[10px] transition-opacity group-hover:opacity-100"
+        :class="isOwn ? 'text-white/60' : 'text-text-on-main-bg-color opacity-70'"
       >
         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />

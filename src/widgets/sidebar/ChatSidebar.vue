@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { ContactList, ContactSearch, FolderTabs } from "@/features/contacts";
+import { InviteModal } from "@/features/invite";
+import { useWallet } from "@/features/wallet/model/use-wallet";
 import { useChatStore } from "@/entities/chat";
 import { RoomListSkeleton } from "@/shared/ui/skeleton";
 import BottomTabBar from "./ui/BottomTabBar.vue";
@@ -78,6 +80,27 @@ const handleRoomCreated = () => {
   searchOpen.value = false;
   emit("selectRoom");
 };
+
+const showInviteModal = ref(false);
+
+// Wallet in header
+const { isAvailable: walletAvailable, getBalance } = useWallet();
+const pkoinBalance = ref<number | null>(null);
+const balanceLoading = ref(false);
+
+const loadBalance = async () => {
+  if (!walletAvailable.value || balanceLoading.value) return;
+  balanceLoading.value = true;
+  try {
+    pkoinBalance.value = await getBalance();
+  } catch {
+    pkoinBalance.value = null;
+  } finally {
+    balanceLoading.value = false;
+  }
+};
+
+watch(walletAvailable, (v) => { if (v) loadBalance(); }, { immediate: true });
 </script>
 
 <template>
@@ -98,6 +121,32 @@ const handleRoomCreated = () => {
           class="flex h-14 shrink-0 items-center gap-3 border-b border-neutral-grad-0 px-3"
         >
           <span class="flex-1 pl-1 text-base font-semibold text-text-color">{{ t("nav.chats") }}</span>
+
+          <!-- PKOIN Wallet -->
+          <button
+            v-if="walletAvailable"
+            class="btn-press flex h-9 items-center gap-1.5 rounded-full bg-neutral-grad-0 px-2.5 text-text-color transition-colors hover:bg-neutral-grad-2/30"
+            :title="t('settings.wallet')"
+            @click="loadBalance"
+          >
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 18 18"
+              fill="currentColor"
+              class="shrink-0 text-color-txt-ac"
+            >
+              <path fill-rule="evenodd" clip-rule="evenodd" d="M17.2584 1.97869L15.182 0L12.7245 2.57886C11.5308 1.85218 10.1288 1.43362 8.62907 1.43362C7.32722 1.43362 6.09904 1.74902 5.01676 2.30756L2.81787 6.45386e-05L0.741455 1.97875L2.73903 4.07498C1.49651 5.46899 0.741455 7.30694 0.741455 9.32124C0.741455 11.1753 1.38114 12.8799 2.45184 14.2264L0.741455 16.0213L2.81787 18L4.61598 16.1131C5.79166 16.8092 7.1637 17.2088 8.62907 17.2088C10.2903 17.2088 11.8317 16.6953 13.1029 15.8182L15.182 18L17.2584 16.0213L15.1306 13.7884C16.0049 12.5184 16.5167 10.9796 16.5167 9.32124C16.5167 7.50123 15.9003 5.8252 14.8648 4.49052L17.2584 1.97869ZM3.5551 9.32124C3.5551 12.1235 5.82679 14.3952 8.62907 14.3952C11.4313 14.3952 13.703 12.1235 13.703 9.32124C13.703 6.51896 11.4313 4.24727 8.62907 4.24727C5.82679 4.24727 3.5551 6.51896 3.5551 9.32124Z" />
+            </svg>
+            <span
+              v-if="balanceLoading"
+              class="text-xs text-text-on-main-bg-color animate-pulse"
+            >...</span>
+            <span
+              v-else-if="pkoinBalance !== null"
+              class="text-xs font-semibold text-color-txt-ac"
+            >{{ pkoinBalance.toFixed(2) }}</span>
+          </button>
 
           <!-- Search toggle -->
           <button
@@ -192,6 +241,23 @@ const handleRoomCreated = () => {
       </transition>
     </div>
 
+    <!-- Invite banner -->
+    <button
+      class="invite-fab btn-press mx-2 mb-1.5 flex shrink-0 items-center justify-center gap-2.5 rounded-xl px-4 py-2.5 text-sm font-bold text-text-on-bg-ac-color shadow-lg transition-all active:scale-[0.97]"
+      :title="t('invite.fab')"
+      @click="showInviteModal = true"
+    >
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+        <circle cx="9" cy="7" r="4" />
+        <line x1="19" y1="8" x2="19" y2="14" />
+        <line x1="22" y1="11" x2="16" y2="11" />
+      </svg>
+      <span>{{ t("invite.fab") }}</span>
+    </button>
+
+    <InviteModal :show="showInviteModal" @close="showInviteModal = false" />
+
     <BottomTabBar :model-value="activeTab" @update:model-value="setTab" />
   </aside>
 </template>
@@ -255,6 +321,16 @@ const handleRoomCreated = () => {
   opacity: 0;
 }
 
+/* Invite FAB — gradient + aggressive glow pulse */
+.invite-fab {
+  background: linear-gradient(135deg, rgb(var(--color-bg-ac-bright)), rgb(var(--color-bg-ac-2)));
+  animation: invite-pulse 2s ease-in-out infinite;
+}
+@keyframes invite-pulse {
+  0%, 100% { box-shadow: 0 4px 16px rgba(var(--color-bg-ac-bright), 0.4), 0 0 0 0 rgba(var(--color-bg-ac-2), 0); }
+  50% { box-shadow: 0 6px 28px rgba(var(--color-bg-ac-bright), 0.6), 0 0 0 6px rgba(var(--color-bg-ac-2), 0.15); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .tab-slide-left-enter-active,
   .tab-slide-left-leave-active,
@@ -265,6 +341,9 @@ const handleRoomCreated = () => {
   .sidebar-slide-right-enter-active,
   .sidebar-slide-right-leave-active {
     transition: none;
+  }
+  .invite-fab {
+    animation: none;
   }
 }
 </style>

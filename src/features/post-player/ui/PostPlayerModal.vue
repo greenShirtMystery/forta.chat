@@ -88,11 +88,11 @@ onUnmounted(() => {
 <template>
   <Teleport to="body">
     <div
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
       @click.self="emit('close')"
     >
       <div
-        class="relative flex max-h-[90vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl bg-color-main-bg shadow-2xl"
+        class="post-modal relative flex max-h-[90vh] w-full max-w-xl flex-col overflow-hidden rounded-2xl border border-neutral-grad-0 bg-background-total-theme shadow-2xl"
       >
         <!-- Close -->
         <button
@@ -107,11 +107,11 @@ onUnmounted(() => {
         <!-- Content -->
         <div class="flex-1 overflow-y-auto">
           <VideoPlayer v-if="videoInfo" :url="post.url" />
-          <div v-else-if="images.length" class="max-h-72 overflow-hidden">
+          <div v-else-if="images.length" class="max-h-80 overflow-hidden">
             <img :src="images[0]" alt="" class="w-full object-cover" loading="lazy" />
           </div>
 
-          <div class="flex flex-col gap-4 p-4">
+          <div class="flex flex-col gap-4 p-5">
             <PostAuthor
               :name="authorName"
               :avatar-url="authorAvatarUrl"
@@ -142,7 +142,7 @@ onUnmounted(() => {
             </div>
 
             <!-- Stars -->
-            <div class="flex flex-col gap-2 border-t border-white/5 pt-3">
+            <div class="flex flex-col gap-2 border-t border-neutral-grad-0 pt-3">
               <StarRating
                 :model-value="myScore"
                 :average="averageScore"
@@ -151,7 +151,7 @@ onUnmounted(() => {
                 :submitting="scoresSubmitting"
                 @update:model-value="handleRate"
               />
-              <span v-if="hasVoted" class="text-[10px] text-gray-400">
+              <span v-if="hasVoted" class="text-[10px] opacity-60">
                 {{ t("postPlayer.rated") }}
               </span>
             </div>
@@ -166,7 +166,7 @@ onUnmounted(() => {
             />
 
             <!-- Comments -->
-            <div ref="commentsRef" class="border-t border-white/5 pt-3">
+            <div ref="commentsRef" class="border-t border-neutral-grad-0 pt-3">
               <PostComments
                 :comments="comments"
                 :loading="commentsLoading"
@@ -196,3 +196,29 @@ onUnmounted(() => {
     </div>
   </Teleport>
 </template>
+
+<style scoped>
+.post-modal {
+  animation: modal-in 0.2s ease-out;
+}
+
+@keyframes modal-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95) translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@media (max-width: 640px) {
+  .post-modal {
+    max-height: 100vh;
+    height: 100%;
+    max-width: 100%;
+    border-radius: 0;
+  }
+}
+</style>

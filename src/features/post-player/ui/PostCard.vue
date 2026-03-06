@@ -82,10 +82,10 @@ onMounted(async () => {
   <!-- Loading -->
   <div
     v-if="loading"
-    class="my-1 flex max-w-sm items-center gap-2 rounded-xl p-3"
-    :class="isOwn ? 'bg-white/10' : 'bg-color-bg-ac/8'"
+    class="post-card my-1 flex w-full max-w-md items-center gap-3 rounded-xl p-3"
+    :class="isOwn ? 'bg-white/10' : 'bg-neutral-grad-0/60'"
   >
-    <div class="h-4 w-4 animate-pulse rounded-full" :class="isOwn ? 'bg-white/20' : 'bg-black/10'" />
+    <div class="h-4 w-4 animate-pulse rounded-full bg-current opacity-20" />
     <span class="text-xs opacity-50">{{ t("post.loading") }}</span>
   </div>
 
@@ -102,8 +102,8 @@ onMounted(async () => {
   <!-- Post card -->
   <div
     v-else-if="post"
-    class="my-1 max-w-sm cursor-pointer overflow-hidden rounded-xl"
-    :class="isOwn ? 'bg-white/10' : 'bg-color-bg-ac/8'"
+    class="post-card group my-1 w-full max-w-md cursor-pointer overflow-hidden rounded-xl transition-shadow hover:shadow-lg"
+    :class="isOwn ? 'bg-white/10 hover:bg-white/[0.14]' : 'bg-neutral-grad-0/60 hover:bg-neutral-grad-0/80'"
     @click="showModal = true"
   >
     <!-- Inline video -->
@@ -114,7 +114,7 @@ onMounted(async () => {
       v-else-if="firstImage"
       :src="firstImage"
       alt=""
-      class="max-h-48 w-full object-cover"
+      class="max-h-52 w-full object-cover"
       loading="lazy"
     />
 
@@ -169,7 +169,10 @@ onMounted(async () => {
           compact
           readonly
         />
-        <span class="text-[10px]" :class="isOwn ? 'text-white/40' : 'text-text-on-main-bg-color'">
+        <span
+          class="text-[10px] transition-opacity group-hover:opacity-100"
+          :class="isOwn ? 'text-white/60 group-hover:text-white/80' : 'text-text-on-main-bg-color opacity-70'"
+        >
           {{ t("postPlayer.openPost") }}
         </span>
       </div>

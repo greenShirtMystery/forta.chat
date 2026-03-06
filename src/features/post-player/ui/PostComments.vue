@@ -59,11 +59,11 @@ const formatTime = (ts: number) => {
     </h3>
 
     <div v-if="loading" class="flex items-center gap-2 py-4">
-      <div class="h-4 w-4 animate-spin rounded-full border-2 border-gray-400 border-t-transparent" />
-      <span class="text-xs text-gray-400">{{ t("post.loading") }}</span>
+      <div class="h-4 w-4 animate-spin rounded-full border-2 border-neutral-grad-2 border-t-transparent" />
+      <span class="text-xs text-text-on-main-bg-color">{{ t("post.loading") }}</span>
     </div>
 
-    <div v-else-if="comments.length === 0" class="py-4 text-center text-xs text-gray-400">
+    <div v-else-if="comments.length === 0" class="py-4 text-center text-xs text-text-on-main-bg-color">
       {{ t("postPlayer.noComments") }}
     </div>
 
@@ -71,7 +71,7 @@ const formatTime = (ts: number) => {
       <div
         v-for="comment in comments"
         :key="comment.id"
-        class="flex gap-2 rounded-lg bg-white/5 p-2.5"
+        class="flex gap-2 rounded-lg bg-neutral-grad-0/50 p-2.5"
       >
         <img
           v-if="authorAvatars[comment.address]"
@@ -90,7 +90,7 @@ const formatTime = (ts: number) => {
             <span class="text-xs font-medium text-text-color">
               {{ authorNames[comment.address] || comment.address.slice(0, 10) }}
             </span>
-            <span class="text-[10px] text-gray-500">{{ formatTime(comment.time) }}</span>
+            <span class="text-[10px] text-text-on-main-bg-color">{{ formatTime(comment.time) }}</span>
           </div>
           <p class="text-xs leading-relaxed text-text-color/80">{{ comment.message }}</p>
         </div>
@@ -102,12 +102,12 @@ const formatTime = (ts: number) => {
         v-model="newComment"
         type="text"
         :placeholder="t('postPlayer.writeComment')"
-        class="flex-1 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-text-color placeholder-gray-500 outline-none focus:border-color-bg-ac/40"
+        class="flex-1 rounded-lg border border-neutral-grad-0 bg-chat-input-bg px-3 py-2 text-xs text-text-color outline-none placeholder:text-neutral-grad-2 focus:border-color-bg-ac/40"
         :disabled="submitting"
         @keydown.enter="handleSubmit"
       />
       <button
-        class="rounded-lg bg-color-bg-ac px-3 py-2 text-xs font-medium text-white transition-opacity disabled:opacity-40"
+        class="rounded-lg bg-color-bg-ac px-3 py-2 text-xs font-medium text-text-on-bg-ac-color transition-opacity disabled:opacity-40"
         :disabled="!newComment.trim() || submitting"
         @click="handleSubmit"
       >

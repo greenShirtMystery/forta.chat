@@ -30,7 +30,7 @@ const formattedTime = computed(() => {
     </div>
     <div class="flex flex-col">
       <span class="text-sm font-medium text-text-color">{{ name }}</span>
-      <span v-if="formattedTime" class="text-xs text-gray-400">{{ formattedTime }}</span>
+      <span v-if="formattedTime" class="text-xs text-text-on-main-bg-color">{{ formattedTime }}</span>
     </div>
   </div>
 </template>

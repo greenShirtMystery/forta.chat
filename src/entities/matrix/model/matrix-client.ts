@@ -197,10 +197,13 @@ export class MatrixClientService {
     this.initEvents();
 
     // Sync config: lazy loading for speed, members loaded explicitly when needed
+    // initialSyncLimit: 1 keeps sync payload small for accounts with many rooms.
+    // Only the last timeline event per room is included; full history is loaded
+    // on-demand when a room is opened (loadAllMessages).
     await userClient.startClient({
       pollTimeout: 60000,
       resolveInvitesToProfiles: true,
-      initialSyncLimit: 10,
+      initialSyncLimit: 1,
       disablePresence: true,
       lazyLoadMembers: true,
     });
