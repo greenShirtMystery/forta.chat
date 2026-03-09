@@ -1,4 +1,4 @@
-export const APP_NAME = "bastyon-chat";
+export const APP_NAME = "forta-chat";
 
 export const PROXY_NODES = [
   { host: "1.pocketnet.app", port: 8899, wss: 8099 },

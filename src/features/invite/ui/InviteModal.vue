@@ -26,7 +26,7 @@ const copyLink = async () => {
 };
 
 const shareUrl = (platform: string) => {
-  const text = encodeURIComponent("Join me on Bastyon Chat!");
+  const text = encodeURIComponent("Join me on Forta Chat!");
   const url = encodeURIComponent(inviteLink.value);
 
   const urls: Record<string, string> = {

@@ -46,7 +46,7 @@ function checkPath(pathname) {
 function httpsGet(url) {
   return new Promise((resolve, reject) => {
     const options = typeof url === 'string' ? url : url;
-    const req = https.get(options, { headers: { 'User-Agent': 'bastyon-chat' } }, (res) => {
+    const req = https.get(options, { headers: { 'User-Agent': 'forta-chat' } }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         return httpsGet(res.headers.location).then(resolve, reject);
       }
@@ -62,7 +62,7 @@ function httpsGet(url) {
 function downloadToFile(url, dest) {
   return new Promise((resolve, reject) => {
     const follow = (url) => {
-      https.get(url, { headers: { 'User-Agent': 'bastyon-chat' } }, (res) => {
+      https.get(url, { headers: { 'User-Agent': 'forta-chat' } }, (res) => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           return follow(res.headers.location);
         }
@@ -213,7 +213,7 @@ class TorControl {
     try { await fs.unlink(sp('torrc')); } catch {}
 
     let torConfig = [
-      '# Auto-generated torrc for Bastyon Chat',
+      '# Auto-generated torrc for Forta Chat',
       'SocksPort 9250',
       'ControlPort 9251',
       'CookieAuthentication 1',
@@ -235,7 +235,7 @@ class TorControl {
     if (useSnowFlake2 && snowflakeExists && snowflakeBin.includes(' ')) {
       try {
         const os = require('os');
-        const linkDir = path.join(os.tmpdir(), 'bastyon-tor-pt');
+        const linkDir = path.join(os.tmpdir(), 'forta-tor-pt');
         if (!checkPath(linkDir).exists) fssync.mkdirSync(linkDir, { recursive: true });
         const linkPath = path.join(linkDir, binName('snowflake-client'));
         try { fssync.unlinkSync(linkPath); } catch {}

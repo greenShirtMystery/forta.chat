@@ -1,9 +1,9 @@
 {
-  "name": "new-bastyon-chat",
+  "name": "forta-chat",
   "private": true,
   "version": "0.1.0",
-  "description": "Bastyon Decentralized Chat",
-  "author": "Bastyon <dev@bastyon.com>",
+  "description": "Forta Chat — Decentralized Messenger",
+  "author": "Forta",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
