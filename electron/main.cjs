@@ -30,7 +30,7 @@ function createWindow() {
     height: 750,
     minWidth: 380,
     minHeight: 500,
-    title: "Bastyon Chat",
+    title: "Forta Chat",
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,

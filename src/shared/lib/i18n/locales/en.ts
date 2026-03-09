@@ -115,7 +115,7 @@ export const en = {
   "chat.copiedToClipboard": "Copied to clipboard",
 
   // ── Title bar ──
-  "titleBar.appName": "Bastyon Chat",
+  "titleBar.appName": "Forta Chat",
   "titleBar.minimize": "Minimize",
   "titleBar.maximize": "Maximize",
   "titleBar.close": "Close",
@@ -268,7 +268,7 @@ export const en = {
   "chatInfo.information": "Information",
   "chatInfo.about": "About",
   "chatInfo.website": "Website",
-  "chatInfo.address": "Bastyon Address",
+  "chatInfo.address": "Forta Address",
   "chatInfo.copied": "Copied",
   "chatInfo.notifications": "Notifications",
   "chatInfo.mediaFilesLinks": "Media, files and links",
@@ -364,7 +364,7 @@ export const en = {
 
   // ── Auth / Login ──
   "auth.signIn": "Sign In",
-  "auth.enterKey": "Enter your Bastyon private key or mnemonic phrase",
+  "auth.enterKey": "Enter your private key or mnemonic phrase",
   "auth.signingIn": "Signing in...",
   "auth.keyNeverLeaves": "Your private key never leaves your device",
   "auth.enterKeyError": "Please enter a private key or mnemonic",
@@ -374,7 +374,7 @@ export const en = {
   "auth.hide": "Hide",
 
   // ── Welcome ──
-  "welcome.title": "Bastyon Chat",
+  "welcome.title": "Forta Chat",
   "welcome.description": "Decentralized messaging with video calls. Private, secure, and censorship-resistant.",
   "welcome.getStarted": "Get Started",
 
@@ -408,7 +408,7 @@ export const en = {
   "post.readMore": "Read more",
   "post.video": "Video",
   "post.article": "Article",
-  "post.openInBastyon": "Open in Bastyon",
+  "post.openInBastyon": "Open in Forta",
 
   // Post player
   "postPlayer.boost": "Boost",
@@ -423,7 +423,7 @@ export const en = {
 
   // ── Registration ──
   "register.title": "Create Account",
-  "register.subtitle": "Set up your Bastyon account in a few steps",
+  "register.subtitle": "Set up your Forta account in a few steps",
   "register.continue": "Continue",
   "register.goBack": "Go Back",
   "register.preparingAccount": "Preparing account...",
@@ -444,7 +444,7 @@ export const en = {
   "register.registering": "Registering...",
   "register.goToChat": "Go to Chat",
   "register.accountPending": "Registration in Progress",
-  "register.accountPendingDescription": "Your account is being confirmed on the Bastyon blockchain. This usually takes a few minutes. Please wait.",
+  "register.accountPendingDescription": "Your account is being confirmed on the blockchain. This usually takes a few minutes. Please wait.",
   "register.accountPendingHint": "This will close automatically once your account is ready.",
   "register.addAvatar": "Add avatar",
   "register.avatarOptional": "Avatar (optional)",

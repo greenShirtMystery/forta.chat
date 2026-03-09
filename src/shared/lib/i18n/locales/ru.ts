@@ -117,7 +117,7 @@ export const ru: Record<TranslationKey, string> = {
   "chat.copiedToClipboard": "Скопировано в буфер обмена",
 
   // ── Title bar ──
-  "titleBar.appName": "Bastyon Chat",
+  "titleBar.appName": "Forta Chat",
   "titleBar.minimize": "Свернуть",
   "titleBar.maximize": "Развернуть",
   "titleBar.close": "Закрыть",
@@ -270,7 +270,7 @@ export const ru: Record<TranslationKey, string> = {
   "chatInfo.information": "Информация",
   "chatInfo.about": "О себе",
   "chatInfo.website": "Сайт",
-  "chatInfo.address": "Адрес Bastyon",
+  "chatInfo.address": "Адрес Forta",
   "chatInfo.copied": "Скопировано",
   "chatInfo.notifications": "Уведомления",
   "chatInfo.mediaFilesLinks": "Медиа, файлы и ссылки",
@@ -366,7 +366,7 @@ export const ru: Record<TranslationKey, string> = {
 
   // ── Auth / Login ──
   "auth.signIn": "Войти",
-  "auth.enterKey": "Введите приватный ключ или мнемоническую фразу Bastyon",
+  "auth.enterKey": "Введите приватный ключ или мнемоническую фразу",
   "auth.signingIn": "Вход...",
   "auth.keyNeverLeaves": "Ваш приватный ключ не покидает устройство",
   "auth.enterKeyError": "Введите приватный ключ или мнемоническую фразу",
@@ -376,7 +376,7 @@ export const ru: Record<TranslationKey, string> = {
   "auth.hide": "Скрыть",
 
   // ── Welcome ──
-  "welcome.title": "Bastyon Chat",
+  "welcome.title": "Forta Chat",
   "welcome.description": "Децентрализованный мессенджер с видеозвонками. Приватный, безопасный и устойчивый к цензуре.",
   "welcome.getStarted": "Начать",
 
@@ -410,7 +410,7 @@ export const ru: Record<TranslationKey, string> = {
   "post.readMore": "Читать далее",
   "post.video": "Видео",
   "post.article": "Статья",
-  "post.openInBastyon": "Открыть в Бастионе",
+  "post.openInBastyon": "Открыть в Forta",
 
   // Post player
   "postPlayer.boost": "Поддержать",
@@ -425,7 +425,7 @@ export const ru: Record<TranslationKey, string> = {
 
   // ── Registration ──
   "register.title": "Создать аккаунт",
-  "register.subtitle": "Настройте аккаунт Bastyon за несколько шагов",
+  "register.subtitle": "Настройте аккаунт Forta за несколько шагов",
   "register.continue": "Продолжить",
   "register.goBack": "Назад",
   "register.preparingAccount": "Подготовка аккаунта...",
@@ -446,7 +446,7 @@ export const ru: Record<TranslationKey, string> = {
   "register.registering": "Регистрация...",
   "register.goToChat": "Перейти в чат",
   "register.accountPending": "Регистрация в процессе",
-  "register.accountPendingDescription": "Ваш аккаунт подтверждается в блокчейне Bastyon. Обычно это занимает несколько минут. Пожалуйста, подождите.",
+  "register.accountPendingDescription": "Ваш аккаунт подтверждается в блокчейне. Обычно это занимает несколько минут. Пожалуйста, подождите.",
   "register.accountPendingHint": "Это окно закроется автоматически, когда аккаунт будет готов.",
   "register.addAvatar": "Добавить аватар",
   "register.avatarOptional": "Аватар (необязательно)",
