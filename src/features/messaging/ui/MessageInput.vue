@@ -5,6 +5,7 @@ import { useThemeStore } from "@/entities/theme";
 import { stripMentionAddresses, stripBastyonLinks } from "@/shared/lib/message-format";
 import { getDraft, saveDraft, clearDraft } from "@/shared/lib/drafts";
 import { useMessages } from "../model/use-messages";
+import { useLinkPreview } from "../model/use-link-preview";
 import { useMediaUpload } from "../model/use-media-upload";
 import EmojiPicker from "./EmojiPicker.vue";
 import AttachmentPanel from "./AttachmentPanel.vue";
@@ -29,6 +30,7 @@ const mediaUpload = useMediaUpload();
 const voiceRecorder = useVoiceRecorder();
 
 const text = ref("");
+const linkPreview = useLinkPreview(text);
 const textareaRef = ref<HTMLTextAreaElement>();
 const mention = useMentionAutocomplete(text, textareaRef);
 const fileInputRef = ref<HTMLInputElement>();
@@ -101,9 +103,9 @@ const handleSend = () => {
     editMessage(chatStore.editingMessage!.id, rawText);
     chatStore.editingMessage = null;
   } else if (chatStore.replyingTo) {
-    sendReply(rawText);
+    sendReply(rawText, linkPreview.activePreview.value ?? undefined);
   } else {
-    sendMessage(rawText);
+    sendMessage(rawText, linkPreview.activePreview.value ?? undefined);
   }
   text.value = "";
   mention.clearMentions();
@@ -310,6 +312,45 @@ const insertEmoji = (emoji: string) => {
           class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-text-on-main-bg-color hover:bg-neutral-grad-0"
           aria-label="Cancel reply"
           @click="cancelReply"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M18 6L6 18" /><path d="M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+    </transition>
+
+    <!-- Link preview bar -->
+    <transition name="input-bar">
+      <div
+        v-if="!isEditing && !chatStore.replyingTo && (linkPreview.loading.value || linkPreview.activePreview.value)"
+        class="mx-auto flex max-w-6xl items-center gap-2 border-b border-neutral-grad-0 px-3 py-2"
+      >
+        <div class="flex h-8 w-8 shrink-0 items-center justify-center text-text-on-main-bg-color/40">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+          </svg>
+        </div>
+        <div class="h-8 w-0.5 shrink-0 rounded-full bg-color-bg-ac" />
+        <div class="min-w-0 flex-1">
+          <template v-if="linkPreview.loading.value">
+            <div class="text-xs font-medium text-text-on-main-bg-color/60">{{ $t('linkPreview.loading') }}</div>
+            <div class="truncate text-xs text-text-on-main-bg-color/40">{{ linkPreview.lastUrl.value }}</div>
+          </template>
+          <template v-else-if="linkPreview.activePreview.value">
+            <div class="truncate text-xs font-medium text-text-on-main-bg-color/60">
+              {{ linkPreview.activePreview.value.siteName || linkPreview.activePreview.value.title || 'Link' }}
+            </div>
+            <div class="truncate text-xs text-text-on-main-bg-color/40">
+              {{ linkPreview.activePreview.value.description || linkPreview.activePreview.value.url }}
+            </div>
+          </template>
+        </div>
+        <button
+          class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-text-on-main-bg-color hover:bg-neutral-grad-0"
+          :aria-label="$t('linkPreview.linkPreview')"
+          @click="linkPreview.dismiss()"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M18 6L6 18" /><path d="M6 6l12 12" />
