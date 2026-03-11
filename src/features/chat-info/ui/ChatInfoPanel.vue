@@ -594,6 +594,19 @@ const openGallery = (tab: "media" | "files" | "links" | "voice" = "media") => {
                   <span v-else class="text-xs text-color-good">{{ t("chatInfo.copied") }}</span>
                 </button>
               </div>
+              <!-- Profile link -->
+              <div v-if="peerAddress" class="mt-3">
+                <a
+                  :href="`bastyon://user?address=${peerAddress}`"
+                  class="inline-flex items-center gap-2 text-sm text-color-txt-ac hover:underline"
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                    <circle cx="12" cy="7" r="4" />
+                  </svg>
+                  {{ t("chatInfo.viewProfile") }}
+                </a>
+              </div>
             </div>
 
             <!-- Notifications toggle -->

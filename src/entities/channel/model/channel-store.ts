@@ -85,6 +85,7 @@ export const useChannelStore = defineStore("channel", () => {
       channelsPage.value = 0;
       hasMoreChannels.value = true;
       channels.value = [];
+      blockHeight.value = 0;
     }
 
     if (!hasMoreChannels.value) return;

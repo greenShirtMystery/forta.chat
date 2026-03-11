@@ -514,6 +514,11 @@ export const useChatStore = defineStore(NAMESPACE, () => {
   const PRELOAD_COUNT = 15;
   let preloadDone = false;
 
+  /** Track which rooms have already been preloaded (cache + network) to avoid double work */
+  const preloadedRoomIds = new Set<string>();
+  /** Track rooms where cache phase started (but network may still be pending) */
+  const cachePreloadedRoomIds = new Set<string>();
+
   /** Background-preload messages for the top visible rooms so opening them feels instant */
   const preloadVisibleRooms = async () => {
     if (preloadDone) return;
@@ -525,9 +530,10 @@ export const useChatStore = defineStore(NAMESPACE, () => {
 
     // Phase 1: Load all cached messages in parallel (fast, IndexedDB)
     await Promise.all(
-      roomsToPreload.map(room =>
-        messages.value[room.id]?.length ? Promise.resolve() : loadCachedMessages(room.id).catch(() => {})
-      )
+      roomsToPreload.map(room => {
+        cachePreloadedRoomIds.add(room.id);
+        return messages.value[room.id]?.length ? Promise.resolve() : loadCachedMessages(room.id).catch(() => {});
+      })
     );
 
     // Phase 2: Load fresh data from Matrix in small batches
@@ -535,10 +541,48 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     for (let i = 0; i < roomsToPreload.length; i += BATCH) {
       const batch = roomsToPreload.slice(i, i + BATCH);
       await Promise.all(
-        batch.map(room => loadRoomMessages(room.id).catch(() => {}))
+        batch.map(room => {
+          preloadedRoomIds.add(room.id);
+          return loadRoomMessages(room.id).catch(() => {});
+        })
       );
       // Yield to UI between batches
       await new Promise(r => setTimeout(r, 0));
+    }
+  };
+
+  /** Viewport-based preload: preload messages for specific room IDs (called from contact list on scroll).
+   *  Phase 1 (cache) runs immediately; Phase 2 (network) runs in background batches. */
+  const preloadRoomsByIds = (roomIds: string[]) => {
+    const toCache: string[] = [];
+    const toNetwork: string[] = [];
+    for (const id of roomIds) {
+      if (id === activeRoomId.value) continue;
+      const room = getRoomById(id);
+      if (!room || room.membership === "invite") continue;
+      if (!cachePreloadedRoomIds.has(id)) {
+        cachePreloadedRoomIds.add(id);
+        if (!messages.value[id]?.length) toCache.push(id);
+      }
+      if (!preloadedRoomIds.has(id)) {
+        preloadedRoomIds.add(id);
+        toNetwork.push(id);
+      }
+    }
+    // Phase 1: cache (fast, parallel)
+    if (toCache.length > 0) {
+      Promise.all(toCache.map(id => loadCachedMessages(id).catch(() => {})));
+    }
+    // Phase 2: network (batched, background)
+    if (toNetwork.length > 0) {
+      (async () => {
+        const BATCH = 3;
+        for (let i = 0; i < toNetwork.length; i += BATCH) {
+          const batch = toNetwork.slice(i, i + BATCH);
+          await Promise.all(batch.map(id => loadRoomMessages(id).catch(() => {})));
+          await new Promise(r => setTimeout(r, 0));
+        }
+      })();
     }
   };
 
@@ -3053,6 +3097,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     pinnedMessageIndex,
     pinnedMessages,
     pinnedRoomIds,
+    preloadRoomsByIds,
     preloadVisibleRooms,
     cyclePinnedMessage,
     refreshRooms,

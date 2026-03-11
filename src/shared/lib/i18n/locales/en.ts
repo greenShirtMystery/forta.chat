@@ -339,6 +339,7 @@ export const en = {
   "chatInfo.forward": "Forward",
   "chatInfo.goToMessage": "Go to message",
   "chatInfo.delete": "Delete",
+  "chatInfo.viewProfile": "View profile",
   "chatInfo.loadingMessages": "Loading messages...",
 
   // ── Polls ──
