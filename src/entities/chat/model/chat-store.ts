@@ -2739,8 +2739,10 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       const roomObj = room as Record<string, unknown>;
       const roomId = roomObj?.roomId as string;
       if (!roomId) return;
+      if (!roomId) return;
 
       const roomMessages = messages.value[roomId];
+      if (!roomMessages) return;
       if (!roomMessages) return;
 
       const matrixService = getMatrixClientService();
@@ -2749,17 +2751,17 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       // Get receipt content: { eventId: { "m.read": { userId: { ts } } } }
       const content = receiptEvent?.getContent?.() ?? receiptEvent?.event?.content;
       if (!content) return;
+      if (!content) return;
 
       let statusChanged = false;
       for (const [eventId, receiptTypes] of Object.entries(content)) {
         const readReceipts = (receiptTypes as Record<string, unknown>)?.["m.read"] as Record<string, unknown> | undefined;
         if (!readReceipts) continue;
 
-        // Check if someone OTHER than us sent a read receipt for one of OUR messages
         for (const userId of Object.keys(readReceipts)) {
           if (userId === myUserId) continue; // skip our own receipts
+          if (userId === myUserId) continue;
 
-          // Find this event in our messages and mark it (and all previous) as read
           const msgIdx = roomMessages.findIndex(m => m.id === eventId);
           if (msgIdx >= 0) {
             const myAddr = matrixIdToAddress(myUserId ?? "");
@@ -2767,7 +2769,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
             for (let i = msgIdx; i >= 0; i--) {
               const msg = roomMessages[i];
               if (msg.senderId !== myAddr) continue;
-              if (msg.status === MessageStatus.read) break; // already read, stop
+              if (msg.status === MessageStatus.read) break;
               if (msg.status === MessageStatus.sent || msg.status === MessageStatus.delivered) {
                 msg.status = MessageStatus.read;
                 statusChanged = true;
