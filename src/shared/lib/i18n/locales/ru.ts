@@ -341,6 +341,7 @@ export const ru: Record<TranslationKey, string> = {
   "chatInfo.forward": "Переслать",
   "chatInfo.goToMessage": "Перейти к сообщению",
   "chatInfo.delete": "Удалить",
+  "chatInfo.viewProfile": "Перейти в профиль",
   "chatInfo.loadingMessages": "Загрузка сообщений...",
 
   // ── Polls ──

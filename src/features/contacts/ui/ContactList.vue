@@ -220,7 +220,7 @@ const hasMoreRooms = computed(() => displayLimit.value < allFilteredRooms.value.
 // Reset page when filter changes and reload visible profiles
 watch(() => props.filter, () => {
   displayLimit.value = PAGE_SIZE;
-  nextTick(loadVisibleProfiles);
+  nextTick(loadVisibleRooms);
 });
 
 const loadMoreRooms = () => {
@@ -233,8 +233,8 @@ const scrollerRef = ref<InstanceType<typeof RecycleScroller>>();
 const ITEM_HEIGHT = 68;
 const PREFETCH_BUFFER = 10; // extra rooms to prefetch ahead of viewport
 
-/** Calculate which rooms are visible + buffer, then load their profiles */
-const loadVisibleProfiles = () => {
+/** Calculate which rooms are visible + buffer, then load their profiles + preload messages */
+const loadVisibleRooms = () => {
   const el = scrollerRef.value?.$el as HTMLElement | undefined;
   if (!el) return;
   const { scrollTop, clientHeight } = el;
@@ -248,8 +248,13 @@ const loadVisibleProfiles = () => {
     const item = filteredRooms.value[i];
     if (item && !isChannel(item)) visibleIds.push((item as ChatRoom).id);
   }
-  if (visibleIds.length > 0) chatStore.loadProfilesForRoomIds(visibleIds);
+  if (visibleIds.length > 0) {
+    chatStore.loadProfilesForRoomIds(visibleIds);
+    chatStore.preloadRoomsByIds(visibleIds);
+  }
 };
+
+let scrollDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 const onScrollerScroll = () => {
   // Load more rooms (infinite scroll)
@@ -260,8 +265,9 @@ const onScrollerScroll = () => {
       loadMoreRooms();
     }
   }
-  // Lazy-load profiles for newly visible rooms
-  loadVisibleProfiles();
+  // Debounce viewport preloading (profiles + messages) to avoid flooding on fast scroll
+  if (scrollDebounceTimer) clearTimeout(scrollDebounceTimer);
+  scrollDebounceTimer = setTimeout(loadVisibleRooms, 150);
 };
 
 // Attach native scroll listener to RecycleScroller's root element
@@ -275,7 +281,7 @@ const attachScrollListener = () => {
 onMounted(() => {
   attachScrollListener();
   // Initial viewport profile load
-  nextTick(loadVisibleProfiles);
+  nextTick(loadVisibleRooms);
 });
 watch(scrollerRef, attachScrollListener);
 onUnmounted(() => { scrollEl?.removeEventListener("scroll", onScrollerScroll); });
