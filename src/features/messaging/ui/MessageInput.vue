@@ -8,6 +8,7 @@ import { useMessages } from "../model/use-messages";
 import { useLinkPreview } from "../model/use-link-preview";
 import { useI18n } from "@/shared/lib/i18n";
 import { useMediaUpload } from "../model/use-media-upload";
+import { usePasteDrop } from "../model/use-paste-drop";
 import EmojiPicker from "./EmojiPicker.vue";
 import AttachmentPanel from "./AttachmentPanel.vue";
 import MediaPreview from "./MediaPreview.vue";
@@ -29,6 +30,19 @@ const themeStore = useThemeStore();
 const { t } = useI18n();
 const { sendMessage, sendFile, sendImage, sendAudio, sendReply, editMessage, setTyping, sendPoll } = useMessages();
 const mediaUpload = useMediaUpload();
+const pasteDrop = usePasteDrop({
+  onMediaFiles: (files) => mediaUpload.addFiles(files),
+  onOtherFiles: async (files) => {
+    sending.value = true;
+    try {
+      for (const file of files) {
+        await sendFile(file);
+      }
+    } finally {
+      sending.value = false;
+    }
+  },
+});
 const voiceRecorder = useVoiceRecorder();
 
 const text = ref("");
@@ -246,6 +260,21 @@ const handleVoicePreviewSend = async () => {
 const showEmojiPicker = ref(false);
 const emojiPickerPos = ref({ x: 0, y: 0 });
 
+/** Expose methods for ChatWindow drag-and-drop integration */
+defineExpose({
+  addMediaFiles: (files: File[]) => mediaUpload.addFiles(files),
+  sendOtherFiles: async (files: File[]) => {
+    sending.value = true;
+    try {
+      for (const file of files) {
+        await sendFile(file);
+      }
+    } finally {
+      sending.value = false;
+    }
+  },
+});
+
 const insertEmoji = (emoji: string) => {
   const el = textareaRef.value;
   if (el) {
@@ -426,6 +455,7 @@ const insertEmoji = (emoji: string) => {
         :disabled="sending"
         @keydown="handleKeydown"
         @input="handleInput"
+        @paste="pasteDrop.handlePaste"
         @click="mention.onCursorChange()"
         @keyup="mention.onCursorChange()"
       />

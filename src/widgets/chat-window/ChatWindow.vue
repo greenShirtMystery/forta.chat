@@ -18,6 +18,8 @@ import type { CallType } from "@/entities/call";
 import { useWallet } from "@/features/wallet";
 import DonateModal from "@/features/wallet/ui/DonateModal.vue";
 import { hexEncode, hexDecode } from "@/shared/lib/matrix/functions";
+import DropOverlay from "@/features/messaging/ui/DropOverlay.vue";
+import { usePasteDrop } from "@/features/messaging/model/use-paste-drop";
 
 const chatStore = useChatStore();
 const authStore = useAuthStore();
@@ -85,6 +87,16 @@ const showForwardPicker = ref(false);
 const showSearch = ref(false);
 const showInfoPanel = ref(false);
 const messageListRef = ref<InstanceType<typeof MessageList>>();
+const chatWindowRef = ref<HTMLElement>();
+const messageInputRef = ref<InstanceType<typeof MessageInput>>();
+
+// Drag-and-drop file support — routes to MessageInput's existing mediaUpload
+const pasteDrop = usePasteDrop({
+  onMediaFiles: (files) => messageInputRef.value?.addMediaFiles(files),
+  onOtherFiles: (files) => messageInputRef.value?.sendOtherFiles(files),
+});
+
+pasteDrop.setupDragListeners(chatWindowRef);
 
 const callService = useCallService();
 const { isAvailable: walletAvailable } = useWallet();
@@ -238,7 +250,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="flex h-full flex-col bg-background-total-theme" style="padding-bottom: max(var(--keyboardheight, 0px), env(safe-area-inset-bottom, 0px))">
+  <div ref="chatWindowRef" class="relative flex h-full flex-col bg-background-total-theme" style="padding-bottom: max(var(--keyboardheight, 0px), env(safe-area-inset-bottom, 0px))">
     <!-- Chat header -->
     <div
       v-if="chatStore.activeRoom && !isChannelView"
@@ -429,6 +441,7 @@ onUnmounted(() => {
         />
         <MessageInput
           v-else
+          ref="messageInputRef"
           :show-donate="!chatStore.activeRoom?.isGroup && walletAvailable"
           @donate="showDonateModal = true"
         />
@@ -451,6 +464,8 @@ onUnmounted(() => {
       :receiver-name="otherMemberName"
       @close="showDonateModal = false"
     />
+
+    <DropOverlay :visible="pasteDrop.isDragging.value" />
   </div>
 </template>
 

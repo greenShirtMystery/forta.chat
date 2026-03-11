@@ -238,6 +238,10 @@ export const en = {
   "media.captionBelow": "Caption below",
   "media.captionAbove": "Caption above",
 
+  // ── Drop overlay ──
+  "drop.title": "Drop files here to send",
+  "drop.subtitle": "Images and videos will open in preview",
+
   // ── Selection bar ──
   "selection.selected": "{count} selected",
   "selection.forward": "Forward",
