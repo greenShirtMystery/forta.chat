@@ -41,3 +41,6 @@ auto-imports.d.ts
 
 # Auto Claude data directory
 .auto-claude/
+
+# Claude Code
+.claude/
