@@ -240,6 +240,10 @@ export const ru: Record<TranslationKey, string> = {
   "media.captionBelow": "Подпись снизу",
   "media.captionAbove": "Подпись сверху",
 
+  // ── Drop overlay ──
+  "drop.title": "Перетащите файлы сюда",
+  "drop.subtitle": "Изображения и видео откроются в превью",
+
   // ── Selection bar ──
   "selection.selected": "{count} выбрано",
   "selection.forward": "Переслать",
