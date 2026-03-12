@@ -4,10 +4,12 @@ import type { BastyonPostData } from "@/app/providers/initializers";
 import { parseVideoUrl } from "@/shared/lib/video-embed";
 import { usePostScores } from "../model/use-post-scores";
 import { usePostBoost } from "../model/use-post-boost";
+import { useToast } from "@/shared/lib/use-toast";
 import VideoPlayer from "./VideoPlayer.vue";
 import StarRating from "./StarRating.vue";
 import PostPlayerModal from "./PostPlayerModal.vue";
 import SharePostPicker from "./SharePostPicker.vue";
+import DonateModal from "@/features/wallet/ui/DonateModal.vue";
 
 interface Props {
   txid: string;
@@ -17,12 +19,16 @@ interface Props {
 const props = defineProps<Props>();
 const { t } = useI18n();
 const authStore = useAuthStore();
+const { toast } = useToast();
 
 // Post scores — interactive voting from card
 const { myScore, averageScore, totalVotes, hasVoted, submitting, load: loadScores, submitVote } = usePostScores(props.txid);
 
 // Boost
 const { showDonateModal, boostAddress, openBoost, closeBoost } = usePostBoost();
+
+// Open user profile (provided by ChatWindow)
+const openUserProfile = inject<((address: string) => void) | null>("openUserProfile", null);
 
 // Try sync cache first — avoids skeleton flash for prefetched posts
 const cached = authStore.getCachedPost(props.txid);
@@ -32,7 +38,6 @@ const error = ref(false);
 const authorName = ref("");
 const authorImage = ref("");
 const authorReputation = ref<number | null>(null);
-const authorSubscribers = ref<number | null>(null);
 const showModal = ref(false);
 const showSharePicker = ref(false);
 
@@ -89,14 +94,18 @@ async function loadAuthor(data: BastyonPostData) {
     authorName.value = user.name || data.address.slice(0, 10);
     authorImage.value = user.image || "";
     authorReputation.value = user.reputation ?? null;
-    authorSubscribers.value = user.subscribers_count ?? null;
   } else {
     authorName.value = data.address.slice(0, 10);
   }
 }
 
-function onVote(value: number) {
-  submitVote(value);
+async function onVote(value: number) {
+  const ok = await submitVote(value);
+  if (ok) {
+    toast(t("postPlayer.rated"), "success");
+  } else {
+    toast(t("postPlayer.ratingRestricted"), "error");
+  }
 }
 
 function onShare() {
@@ -106,6 +115,12 @@ function onShare() {
 function onBoost() {
   if (post.value?.address) {
     openBoost(post.value.address);
+  }
+}
+
+function onAuthorClick() {
+  if (post.value?.address && openUserProfile) {
+    openUserProfile(post.value.address);
   }
 }
 
@@ -164,8 +179,11 @@ onMounted(async () => {
     class="post-card my-1.5 w-full max-w-md overflow-hidden rounded-2xl border"
     :class="isOwn ? 'border-white/10 bg-white/[0.08]' : 'border-neutral-grad-1/50 bg-background-total-theme'"
   >
-    <!-- Author header -->
-    <div class="flex items-center gap-3 p-4 pb-3">
+    <!-- Author header — clickable to open profile -->
+    <div
+      class="flex cursor-pointer items-center gap-3 p-4 pb-3"
+      @click.stop="onAuthorClick"
+    >
       <!-- Avatar -->
       <img
         v-if="authorAvatarUrl"
@@ -192,10 +210,6 @@ onMounted(async () => {
             class="text-[10px] font-medium"
             :class="isOwn ? 'text-white/50' : 'text-text-on-main-bg-color'"
           >{{ formattedReputation }}</sup>
-          <span
-            class="shrink-0 text-xs"
-            :class="isOwn ? 'text-white/40' : 'text-text-on-main-bg-color'"
-          >&middot; {{ t("post.subscribe") }}</span>
         </div>
         <span v-if="postDate" class="text-xs" :class="isOwn ? 'text-white/50' : 'text-text-on-main-bg-color'">
           {{ postDate }}
@@ -254,16 +268,16 @@ onMounted(async () => {
         @update:model-value="onVote"
       />
 
-      <!-- Separator + subscribers count -->
+      <!-- Votes count badge -->
       <div
-        v-if="authorSubscribers != null"
+        v-if="totalVotes > 0"
         class="flex items-center gap-1 rounded-full border px-2.5 py-1"
         :class="isOwn ? 'border-white/20 text-white/60' : 'border-neutral-grad-1 text-text-on-main-bg-color'"
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" />
         </svg>
-        <span class="text-xs font-medium">{{ authorSubscribers }}</span>
+        <span class="text-xs font-medium">{{ totalVotes }}</span>
       </div>
 
       <div class="flex-1" />
@@ -323,5 +337,13 @@ onMounted(async () => {
     :post-link="postLink"
     :post-title="post?.caption || ''"
     @close="showSharePicker = false"
+  />
+
+  <!-- Donate modal for boost -->
+  <DonateModal
+    :show="showDonateModal"
+    :receiver-address="boostAddress"
+    :receiver-name="authorName"
+    @close="closeBoost"
   />
 </template>

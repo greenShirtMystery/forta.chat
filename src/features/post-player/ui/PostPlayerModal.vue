@@ -38,6 +38,14 @@ const {
 
 const { showDonateModal, boostAddress, openBoost, closeBoost } = usePostBoost();
 
+const openUserProfile = inject<((address: string) => void) | null>("openUserProfile", null);
+
+const onAuthorClick = () => {
+  if (props.post.address && openUserProfile) {
+    openUserProfile(props.post.address);
+  }
+};
+
 const videoInfo = computed(() => props.post.url ? parseVideoUrl(props.post.url) : null);
 const isOwnPost = computed(() => props.post.address === authStore.address);
 const isArticle = computed(() => props.post.settings?.v === "a");
@@ -112,12 +120,14 @@ onUnmounted(() => {
           </div>
 
           <div class="flex flex-col gap-4 p-5 text-text-color">
-            <PostAuthor
-              :name="authorName"
-              :avatar-url="authorAvatarUrl"
-              :address="post.address"
-              :time="post.time"
-            />
+            <div class="cursor-pointer" @click="onAuthorClick">
+              <PostAuthor
+                :name="authorName"
+                :avatar-url="authorAvatarUrl"
+                :address="post.address"
+                :time="post.time"
+              />
+            </div>
 
             <div v-if="isArticle || videoInfo" class="flex">
               <span class="rounded-full bg-color-bg-ac/15 px-2 py-0.5 text-[10px] font-medium text-color-bg-ac">
@@ -143,14 +153,25 @@ onUnmounted(() => {
 
             <!-- Stars -->
             <div class="flex flex-col gap-2 border-t border-neutral-grad-0 pt-3">
-              <StarRating
-                :model-value="myScore"
-                :average="averageScore"
-                :total-votes="totalVotes"
-                :readonly="isOwnPost"
-                :submitting="scoresSubmitting"
-                @update:model-value="handleRate"
-              />
+              <div class="flex items-center gap-3">
+                <StarRating
+                  :model-value="myScore"
+                  :average="averageScore"
+                  :total-votes="totalVotes"
+                  :readonly="isOwnPost"
+                  :submitting="scoresSubmitting"
+                  @update:model-value="handleRate"
+                />
+                <div
+                  v-if="totalVotes > 0"
+                  class="flex items-center gap-1 rounded-full border border-neutral-grad-1 px-2.5 py-1 text-text-on-main-bg-color"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" />
+                  </svg>
+                  <span class="text-xs font-medium">{{ totalVotes }}</span>
+                </div>
+              </div>
               <span v-if="hasVoted" class="text-[10px] text-text-on-main-bg-color">
                 {{ t("postPlayer.rated") }}
               </span>
