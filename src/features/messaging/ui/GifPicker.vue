@@ -183,15 +183,12 @@ function selectGif(gif: TenorGif) {
         <span class="text-sm">No GIFs found</span>
       </div>
 
-      <!-- Grid: static jpg previews, animate on hover -->
-      <div v-else class="grid grid-cols-2 gap-1.5">
+      <!-- Masonry grid: static jpg previews, animate on hover -->
+      <div v-else class="gif-masonry">
         <button
           v-for="gif in gifs"
           :key="gif.id"
-          class="gif-item group relative overflow-hidden rounded-lg"
-          :style="{
-            aspectRatio: `${gif.width} / ${gif.height}`,
-          }"
+          class="gif-item group relative mb-1.5 w-full overflow-hidden rounded-lg"
           @mouseenter="hoveredId = gif.id"
           @mouseleave="hoveredId = null"
           @click="selectGif(gif)"
@@ -200,9 +197,9 @@ function selectGif(gif: TenorGif) {
             :src="hoveredId === gif.id ? gif.animatedPreviewUrl : gif.previewUrl"
             :alt="gif.title"
             loading="lazy"
-            class="h-full w-full object-cover"
+            class="block w-full rounded-lg"
           />
-          <div class="absolute inset-0 bg-black/0 transition-colors group-hover:bg-black/10" />
+          <div class="absolute inset-0 rounded-lg bg-black/0 transition-colors group-hover:bg-black/10" />
         </button>
       </div>
 
@@ -230,9 +227,15 @@ function selectGif(gif: TenorGif) {
   }
 }
 
+.gif-masonry {
+  columns: 2;
+  column-gap: 6px;
+}
+
 .gif-item {
   cursor: pointer;
   background-color: rgba(128, 128, 128, 0.1);
+  break-inside: avoid;
 }
 
 .gif-item:active {
