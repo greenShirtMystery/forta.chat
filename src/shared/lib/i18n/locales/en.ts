@@ -205,6 +205,9 @@ export const en = {
   "voice.send": "Send",
   "voice.discard": "Discard",
   "voice.voiceMessage": "Voice message",
+  "voice.slideCancel": "Slide to cancel",
+  "voice.hintVideo": "Tap for video, hold to record",
+  "voice.hintAudio": "Tap for audio, hold to record",
 
   // ── Chat search ──
   "chatSearch.placeholder": "Search in chat...",
