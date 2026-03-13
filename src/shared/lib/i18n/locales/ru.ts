@@ -207,6 +207,9 @@ export const ru: Record<TranslationKey, string> = {
   "voice.send": "Отправить",
   "voice.discard": "Удалить",
   "voice.voiceMessage": "Голосовое сообщение",
+  "voice.slideCancel": "Сдвиньте для отмены",
+  "voice.hintVideo": "Нажмите для видео, удерживайте чтобы записать",
+  "voice.hintAudio": "Нажмите для аудио, удерживайте чтобы записать",
 
   // ── Chat search ──
   "chatSearch.placeholder": "Поиск в чате...",

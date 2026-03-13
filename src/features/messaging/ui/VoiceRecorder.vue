@@ -113,32 +113,11 @@ const waveformBars = computed(() => {
 </script>
 
 <template>
-  <!-- Recording state (hold-to-record on mobile) -->
-  <div v-if="state === 'recording'" class="flex items-center gap-2 px-2 py-2">
-    <span class="text-xs text-text-on-main-bg-color/60">&lt; Slide to cancel</span>
-    <div class="flex flex-1 items-center gap-2">
-      <span class="h-2.5 w-2.5 animate-pulse rounded-full bg-color-bad" />
-      <span class="text-sm tabular-nums font-medium text-text-color">{{ formatDuration(duration) }}</span>
-    </div>
-    <!-- Live waveform -->
-    <div class="flex h-8 items-end gap-px">
-      <div
-        v-for="(v, i) in waveformBars"
-        :key="i"
-        class="w-1 rounded-full bg-color-bg-ac transition-all"
-        :style="{ height: `${Math.max(3, v * 32)}px` }"
-      />
-    </div>
-    <!-- Lock hint -->
-    <div class="flex flex-col items-center text-text-on-main-bg-color/40">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" />
-      </svg>
-    </div>
-  </div>
+  <!-- Recording state (hold-to-record): NO bar, clean UI. Empty placeholder to keep mounted -->
+  <div v-if="state === 'recording'" />
 
   <!-- Locked state (hands-free) -->
-  <div v-else-if="state === 'locked'" class="flex items-center gap-2 px-2 py-2">
+  <div v-else-if="state === 'locked'" class="mx-auto flex max-w-6xl items-center gap-2 px-2 py-2">
     <button
       class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-color-bad transition-colors hover:bg-neutral-grad-0"
       :title="t('voice.cancel')"
@@ -179,7 +158,7 @@ const waveformBars = computed(() => {
   </div>
 
   <!-- Preview state -->
-  <div v-else-if="state === 'preview'" class="flex items-center gap-2 px-2 py-2">
+  <div v-else-if="state === 'preview'" class="mx-auto flex max-w-6xl items-center gap-2 px-2 py-2">
     <button
       class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-color-bad transition-colors hover:bg-neutral-grad-0"
       title="Discard"
