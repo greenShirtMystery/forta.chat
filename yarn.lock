@@ -1669,6 +1669,11 @@ electron@^40.6.0:
     "@types/node" "^24.9.0"
     extract-zip "^2.0.1"
 
+emoji-kitchen-mart@^6.0.5:
+  version "6.0.5"
+  resolved "https://registry.npmjs.org/emoji-kitchen-mart/-/emoji-kitchen-mart-6.0.5.tgz"
+  integrity sha512-pA3PLp0sXwNRhW8TIRlSY0NFRJXbPYZz+BbrVoyLF2okXWdjxhO7p7AtcQnMDY7jPZCY/MfwkkfFdPEZfNy01Q==
+
 emoji-regex@^8.0.0:
   version "8.0.0"
   resolved "https://registry.npmjs.org/emoji-regex/-/emoji-regex-8.0.0.tgz"
