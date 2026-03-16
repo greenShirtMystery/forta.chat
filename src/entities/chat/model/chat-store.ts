@@ -11,6 +11,7 @@ import { defineStore } from "pinia";
 import { computed, ref, shallowRef, triggerRef } from "vue";
 
 import type { ChatDbKit, ParsedMessage, LocalRoom } from "@/shared/lib/local-db";
+import { useLiveQuery, localToMessages } from "@/shared/lib/local-db";
 import type { ChatRoom, FileInfo, LinkPreview, Message, PollInfo, ReplyTo, TransferInfo } from "./types";
 import { MessageStatus, MessageType } from "./types";
 
@@ -236,6 +237,8 @@ export const useChatStore = defineStore(NAMESPACE, () => {
   const rooms = shallowRef<ChatRoom[]>([]);
   const roomsMap = new Map<string, ChatRoom>(); // O(1) lookup index
   const activeRoomId = ref<string | null>(null);
+  // Message window size for pagination (increases on scroll-up, resets on room switch)
+  const messageWindowSize = ref(50);
   const messages = shallowRef<Record<string, Message[]>>({});
   const typing = ref<Record<string, string[]>>({});
   const replyingTo = ref<ReplyTo | null>(null);
@@ -489,20 +492,33 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     return chatDbKitRef.value;
   };
 
+  // Primary message source: Dexie liveQuery (auto-subscribes to DB changes)
+  const dexieMessages = useLiveQuery(
+    () => {
+      if (!activeRoomId.value || !chatDbKitRef.value) return [] as import("@/shared/lib/local-db").LocalMessage[];
+      return chatDbKitRef.value.messages.getMessages(
+        activeRoomId.value,
+        messageWindowSize.value,
+      );
+    },
+    () => [activeRoomId.value, messageWindowSize.value, chatDbKitRef.value] as const,
+    [] as import("@/shared/lib/local-db").LocalMessage[],
+  );
+
   const activeRoom = computed(() => {
     // Access rooms.value to register Vue reactive dependency
     void rooms.value;
     return activeRoomId.value ? getRoomById(activeRoomId.value) : undefined;
   });
 
-  // Return the array directly (no spread) to preserve object identity between
-  // triggerRef calls. DynamicScroller uses key-field="id" for diffing, so it
-  // handles in-place mutations correctly. Spreading created a new array reference
-  // on every triggerRef(messages) — even for unrelated rooms — causing unnecessary
-  // full re-renders and flickering during cache→server sync.
-  const activeMessages = computed(() =>
-    activeRoomId.value ? (messages.value[activeRoomId.value] ?? []) : []
-  );
+  // Convert Dexie LocalMessage[] → Message[] for UI, fallback to old shallowRef during migration
+  const activeMessages = computed<Message[]>(() => {
+    if (chatDbKitRef.value && dexieMessages.value.length > 0) {
+      return localToMessages(dexieMessages.value);
+    }
+    // Fallback: use old in-memory store (during init or if Dexie empty)
+    return activeRoomId.value ? (messages.value[activeRoomId.value] ?? []) : [];
+  });
 
   const activeMediaMessages = computed(() =>
     activeMessages.value.filter(m => m.type === MessageType.image || m.type === MessageType.video)
@@ -1209,6 +1225,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
 
   const setActiveRoom = (roomId: string | null) => {
     activeRoomId.value = roomId;
+    messageWindowSize.value = 50; // Reset pagination window
     if (roomId) {
       const room = getRoomById(roomId);
       if (room) room.unreadCount = 0;
@@ -1236,6 +1253,11 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         console.warn("[chat-store] sendReadReceipt error:", e);
       }
     }
+  };
+
+  /** Expand the message window for scroll-up pagination */
+  const expandMessageWindow = (amount = 50) => {
+    messageWindowSize.value += amount;
   };
 
   /** Accept an invite: join the room and update membership */
@@ -3403,5 +3425,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     chatDbKitRef,
     setChatDbKit,
     getDbKit,
+    expandMessageWindow,
+    messageWindowSize,
   };
 });
