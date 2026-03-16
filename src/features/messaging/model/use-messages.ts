@@ -554,6 +554,50 @@ export function useMessages() {
 
     const trimmed = content.trim();
 
+    // New path: Dexie createLocal with replyTo → SyncEngine sends
+    if (isChatDbReady()) {
+      try {
+        const dbKit = getChatDb();
+        const localMsg = await dbKit.messages.createLocal({
+          roomId,
+          senderId: authStore.address ?? "",
+          content: trimmed,
+          type: MessageType.text,
+          replyTo: {
+            id: replyTo.id,
+            senderId: replyTo.senderId,
+            content: replyTo.content,
+            type: replyTo.type,
+          },
+        });
+        chatStore.replyingTo = null;
+
+        await dbKit.syncEngine.enqueue(
+          "send_message",
+          roomId,
+          {
+            content: trimmed,
+            replyToEventId: replyTo.id,
+            ...(linkPreview ? {
+              linkPreview: {
+                url: linkPreview.url,
+                site_name: linkPreview.siteName,
+                title: linkPreview.title,
+                description: linkPreview.description,
+                image_url: linkPreview.imageUrl,
+                image_width: linkPreview.imageWidth,
+                image_height: linkPreview.imageHeight,
+              },
+            } : {}),
+          },
+          localMsg.clientId,
+        );
+        return;
+      } catch (e) {
+        console.warn("[use-messages] Dexie sendReply failed, falling back:", e);
+      }
+    }
+
     // Optimistic message
     const tempId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
     const message: Message = {
@@ -632,6 +676,22 @@ export function useMessages() {
 
     const trimmed = newContent.trim();
 
+    // New path: Dexie local edit → SyncEngine sends to server
+    if (isChatDbReady()) {
+      try {
+        const dbKit = getChatDb();
+        await dbKit.messages.editLocal(messageId, trimmed);
+        await dbKit.syncEngine.enqueue(
+          "edit_message",
+          roomId,
+          { eventId: messageId, newContent: trimmed },
+        );
+        return;
+      } catch (e) {
+        console.warn("[use-messages] Dexie editMessage failed, falling back:", e);
+      }
+    }
+
     try {
       const roomCrypto = authStore.pcrypto?.rooms[roomId] as PcryptoRoomInstance | undefined;
 
@@ -674,6 +734,22 @@ export function useMessages() {
 
     const matrixService = getMatrixClientService();
     if (!matrixService.isReady()) return;
+
+    // New path: Dexie soft-delete → SyncEngine sends redaction
+    if (isChatDbReady() && forEveryone) {
+      try {
+        const dbKit = getChatDb();
+        await dbKit.messages.softDelete(messageId);
+        await dbKit.syncEngine.enqueue(
+          "delete_message",
+          roomId,
+          { eventId: messageId },
+        );
+        return;
+      } catch (e) {
+        console.warn("[use-messages] Dexie deleteMessage failed, falling back:", e);
+      }
+    }
 
     try {
       if (forEveryone) {
