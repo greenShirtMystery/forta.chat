@@ -1230,6 +1230,11 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       const room = getRoomById(roomId);
       if (room) room.unreadCount = 0;
 
+      // Clear unread in Dexie (source of truth after migration)
+      if (chatDbKitRef.value) {
+        chatDbKitRef.value.eventWriter.clearUnread(roomId).catch(() => {});
+      }
+
       // Ensure member profiles are loaded for the active room
       profilesRequestedForRooms.delete(roomId);
       loadProfilesForRoomIds([roomId]);
@@ -1651,7 +1656,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     if (room) {
       room.lastMessage = message;
       room.updatedAt = message.timestamp;
-      if (roomId !== activeRoomId.value) {
+      if (roomId !== activeRoomId.value && message.senderId !== useAuthStore().address) {
         room.unreadCount++;
       }
       triggerRef(rooms);
