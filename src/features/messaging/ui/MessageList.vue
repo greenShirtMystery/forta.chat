@@ -391,45 +391,39 @@ watch(
   { immediate: true },
 );
 
-// Auto-scroll only if user is near bottom; otherwise increment new message count.
-// Exception: when the newly added message is our own (we sent it), always scroll to bottom
-// so we see the sent message even if we were scrolled up.
-// Also track new real-time messages for entrance animation
-watch(
-  () => chatStore.activeMessages.length,
-  (newLen, oldLen) => {
-    // Skip during room switch, pagination, or bulk loads
-    if (switching.value || loadingMore.value) return;
+// Track the last message's identity to detect real appends
+// (replaces unreliable length-based watcher that missed setMessages replacements)
+const lastMessageIdentity = computed(() => {
+  const msgs = chatStore.activeMessages;
+  if (!msgs.length) return null;
+  const last = msgs[msgs.length - 1];
+  return `${last.id}:${msgs.length}`;
+});
 
-    const delta = oldLen !== undefined ? newLen - oldLen : 0;
-    if (delta > 10) return;
+watch(lastMessageIdentity, (newVal, oldVal) => {
+  if (!newVal || !oldVal || switching.value || loadingMore.value) return;
 
-    const msgs = chatStore.activeMessages;
-    const lastAddedIsOwn = oldLen !== undefined && delta > 0 && msgs[newLen - 1]?.senderId === authStore.address;
+  const msgs = chatStore.activeMessages;
+  const lastMsg = msgs[msgs.length - 1];
+  if (!lastMsg) return;
 
-    if (lastAddedIsOwn) {
-      // Мы только что отправили сообщение — прокручиваем вниз, чтобы его видеть
-      scrollToBottom();
-    } else if (isNearBottom.value) {
-      scrollToBottom();
-    } else if (delta > 0) {
-      newMessageCount.value += delta;
-    }
-    // Track newly arrived messages for entrance animation (only appended, not paginated)
-    if (!loading.value && oldLen !== undefined && delta > 0) {
-      const capturedIds: string[] = [];
-      for (let i = oldLen; i < newLen; i++) {
-        if (msgs[i]) {
-          recentMessageIds.value.add(msgs[i].id);
-          capturedIds.push(msgs[i].id);
-        }
-      }
-      setTimeout(() => {
-        capturedIds.forEach(id => recentMessageIds.value.delete(id));
-      }, 350);
-    }
-  },
-);
+  const lastAddedIsOwn = lastMsg.senderId === authStore.address;
+
+  if (lastAddedIsOwn || isNearBottom.value) {
+    scrollToBottom();
+  } else {
+    newMessageCount.value++;
+  }
+
+  // Track newly arrived messages for entrance animation
+  if (!loading.value) {
+    recentMessageIds.value.add(lastMsg.id);
+    const capturedId = lastMsg.id;
+    setTimeout(() => {
+      recentMessageIds.value.delete(capturedId);
+    }, 350);
+  }
+});
 
 /** Remove animation class immediately after the CSS animation finishes.
  *  This prevents DynamicScroller from accidentally replaying the entrance
@@ -501,6 +495,8 @@ const waitForDomSettle = (): Promise<void> =>
 /** Load older messages and preserve scroll position */
 const doLoadMore = (roomId: string, container: HTMLElement): Promise<void> => {
   if (prefetching.value) return Promise.resolve(); // avoid race with prefetch
+  // Expand Dexie query window for instant local pagination
+  chatStore.expandMessageWindow();
   const prevHeight = container.scrollHeight;
   loadingMore.value = true;
   return chatStore.loadMoreMessages(roomId).then(async (more) => {
