@@ -51,6 +51,18 @@ export class MessageRepository {
     return pending.sort((a, b) => a.timestamp - b.timestamp);
   }
 
+  /** Get the last non-deleted message in a room (for preview after deletion) */
+  async getLastNonDeleted(roomId: string): Promise<LocalMessage | undefined> {
+    const msgs = await this.db.messages
+      .where("[roomId+timestamp]")
+      .between([roomId, Dexie.minKey], [roomId, Dexie.maxKey])
+      .reverse()
+      .filter((m) => !m.softDeleted && !m.deleted)
+      .limit(1)
+      .toArray();
+    return msgs[0];
+  }
+
   // ---------------------------------------------------------------------------
   // Writes (local-first)
   // ---------------------------------------------------------------------------

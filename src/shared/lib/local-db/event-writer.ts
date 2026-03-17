@@ -220,9 +220,35 @@ export class EventWriter {
   // Redactions (deletions)
   // ---------------------------------------------------------------------------
 
-  /** Mark a message as soft-deleted */
+  /** Mark a message as soft-deleted and update room preview if needed */
   async writeRedaction(redaction: ParsedRedaction): Promise<void> {
+    // Get the message before soft-deleting to check if it affects room preview
+    const deletedMsg = await this.messageRepo.getByEventId(redaction.redactedEventId);
     await this.messageRepo.softDelete(redaction.redactedEventId);
+
+    // Update room preview if the deleted message might have been the latest
+    if (deletedMsg) {
+      const room = await this.roomRepo.getRoom(redaction.roomId);
+      const wasLastMessage = room?.lastMessageTimestamp != null
+        && deletedMsg.timestamp >= room.lastMessageTimestamp;
+
+      if (wasLastMessage || !room?.lastMessageTimestamp) {
+        const prevMsg = await this.messageRepo.getLastNonDeleted(redaction.roomId);
+        if (prevMsg) {
+          await this.updateRoomPreviewFromLocal(prevMsg);
+        } else {
+          // All messages deleted — show tombstone preview
+          await this.roomRepo.updateLastMessage(
+            redaction.roomId,
+            "🚫 Message deleted",
+            deletedMsg.timestamp,
+            deletedMsg.senderId,
+            deletedMsg.type,
+          );
+        }
+      }
+    }
+
     this.onChange?.(redaction.roomId);
   }
 
@@ -335,6 +361,27 @@ export class EventWriter {
       parsed.timestamp,
       parsed.senderId,
       parsed.type,
+    );
+  }
+
+  /** Update room preview from an existing LocalMessage (used after deletion) */
+  private async updateRoomPreviewFromLocal(msg: LocalMessage): Promise<void> {
+    let preview = msg.content;
+    if (msg.type === MessageType.image) preview = "📷 Photo";
+    else if (msg.type === MessageType.video) preview = "🎬 Video";
+    else if (msg.type === MessageType.audio) preview = "🎵 Audio";
+    else if (msg.type === MessageType.file) preview = "📎 File";
+    else if (msg.type === MessageType.poll) preview = "📊 Poll";
+    else if (msg.type === MessageType.transfer) {
+      preview = `💰 ${msg.transferInfo?.amount ?? 0} PKOIN`;
+    }
+
+    await this.roomRepo.updateLastMessage(
+      msg.roomId,
+      preview,
+      msg.serverTs ?? msg.timestamp,
+      msg.senderId,
+      msg.type,
     );
   }
 }
