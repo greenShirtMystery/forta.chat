@@ -9,9 +9,11 @@ import { MessageStatus } from "@/entities/chat/model/types";
 export function localToMessage(
   local: LocalMessage,
   outboundWatermark?: number,
+  myAddress?: string,
 ): Message & { _key?: string } {
   const isDeleted = local.deleted || local.softDeleted;
-  const status = outboundWatermark !== undefined
+  const isOwnMessage = myAddress && local.senderId === myAddress;
+  const status = (outboundWatermark !== undefined && isOwnMessage)
     ? deriveOutboundStatus(local.status, local.timestamp, outboundWatermark)
     : localStatusToMessageStatus(local.status);
   return {
@@ -40,8 +42,8 @@ export function localToMessage(
 }
 
 /** Map LocalMessage[] to Message[] (preserves order) */
-export function localToMessages(locals: LocalMessage[], outboundWatermark?: number): Message[] {
-  return locals.map(l => localToMessage(l, outboundWatermark));
+export function localToMessages(locals: LocalMessage[], outboundWatermark?: number, myAddress?: string): Message[] {
+  return locals.map(l => localToMessage(l, outboundWatermark, myAddress));
 }
 
 export function localStatusToMessageStatus(status: LocalMessageStatus): MessageStatus {
