@@ -296,21 +296,58 @@ const scrollToBottom = (smooth = false, onSettled?: () => void) => {
 /** Scroll to either the unread-divider (if there are unread messages) or to the bottom.
  *  Called once after a room is rendered for the first time.
  *
- *  We use scrollerRef.scrollToItem(idx) rather than querying the DOM directly
- *  because DynamicScroller only renders items in the current viewport — the
- *  unread-divider element won't exist in the DOM until we scroll near it. */
-const scrollToInitialPosition = (roomId: string, el: HTMLElement | null) => {
+ *  Strategy: pre-scroll to bottom so DynamicScroller renders items near the end of the list
+ *  (where unread messages and the divider live). Then query the actual DOM element for precise
+ *  positioning — this avoids relying on estimated heights for unrendered items, which caused
+ *  ResizeObserver corrections to produce a visible scroll shift after reveal.
+ *
+ *  Falls back to scrollToItem() if the divider is not in the rendered DOM
+ *  (edge case: very many unread messages push the divider above the render buffer). */
+const scrollToInitialPosition = async (roomId: string, el: HTMLElement | null): Promise<void> => {
   if (!el) return;
   const unreadCount = chatStore.getRoomOpenUnreadCount(roomId);
-  if (unreadCount > 0 && scrollerRef.value) {
-    const dividerIdx = virtualItems.value.findIndex(item => item.type === "unread-divider");
-    if (dividerIdx >= 0) {
-      scrollerRef.value.scrollToItem(dividerIdx);
-      return;
-    }
+  const scrollToBottom = async () => {
+    // Set once immediately, then again after DynamicScroller renders and measures the
+    // bottom items — otherwise the first pass uses an underestimated scrollHeight
+    // (virtual items above the viewport still have placeholder heights).
+    el.scrollTop = el.scrollHeight + 9999;
+    await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    el.scrollTop = el.scrollHeight + 9999;
+  };
+
+  if (unreadCount <= 0) {
+    await scrollToBottom();
+    return;
   }
-  // Default: scroll to bottom
+
+  const dividerIdx = virtualItems.value.findIndex(item => item.type === "unread-divider");
+  if (dividerIdx < 0) {
+    await scrollToBottom();
+    return;
+  }
+
+  // Pre-scroll to bottom: the unread-divider sits just before the first unread message
+  // (near the end of the list), so DynamicScroller will render and measure it.
   el.scrollTop = el.scrollHeight + 9999;
+
+  // Double rAF — same as waitForDomSettle — gives ResizeObserver time to measure
+  // the newly-rendered items near the bottom.
+  await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+  // Query the divider from the DOM. Since we scrolled to the bottom it should be
+  // rendered (either in the viewport or in DynamicScroller's render buffer above it).
+  const dividerEl = el.querySelector('[data-unread-divider]');
+  if (dividerEl) {
+    // Align divider top with scroll-container top.
+    const containerTop = el.getBoundingClientRect().top;
+    const dividerTop = dividerEl.getBoundingClientRect().top;
+    el.scrollTop += dividerTop - containerTop;
+    return;
+  }
+
+  // Fallback: divider not yet in the DOM (many unread messages push it above the buffer).
+  // scrollToItem is less accurate for unmeasured items but is the only option here.
+  scrollerRef.value?.scrollToItem(dividerIdx);
 };
 
 // Map from roomId → id of the last message we sent a read receipt for
@@ -438,12 +475,26 @@ watch(
         el.scrollTop = el.scrollHeight - el.clientHeight - saved.distFromBottom;
         savedScrollPositions.delete(roomId);
       } else {
-        scrollToInitialPosition(roomId, el);
+        await scrollToInitialPosition(roomId, el);
+        if (isStale()) return;
       }
       settled.value = true;
       switching.value = false;
       prevScrollHeight = el?.scrollHeight ?? 0;
       checkScroll();
+      // Post-settle scroll correction: DynamicScroller may still be adjusting
+      // item heights after the initial double-rAF scroll. The contentResizeObserver
+      // missed all resize events while switching was true, so we schedule extra
+      // scroll passes to catch late layout shifts (images, avatars, etc.).
+      if (isNearBottom.value && el) {
+        const doCorrection = () => {
+          if (isStale() || !isNearBottom.value) return;
+          el.scrollTop = el.scrollHeight + 9999;
+          prevScrollHeight = el.scrollHeight;
+        };
+        requestAnimationFrame(doCorrection);
+        setTimeout(doCorrection, 200);
+      }
       // Check which messages are already visible at the initial position
       nextTick(() => checkVisibleForRead());
 
@@ -453,8 +504,18 @@ watch(
       }
 
       // 2. Fetch fresh messages from server in background (silent update).
-      // watch(activeMessages.length) + ResizeObserver handle scrolling.
-      loadMessages(roomId).catch(() => {}).finally(() => {
+      // After completion, scroll to bottom if user was already there — older messages
+      // may have been prepended (changing total height), which the contentResizeObserver
+      // handles per-frame, but this explicit pass guarantees we land at the true bottom.
+      loadMessages(roomId).then(async () => {
+        if (isStale()) return;
+        if (!isNearBottom.value) return;
+        const el = getScrollContainer();
+        if (!el) return;
+        el.scrollTop = el.scrollHeight + 9999;
+        await new Promise<void>(resolve => requestAnimationFrame(resolve));
+        el.scrollTop = el.scrollHeight + 9999;
+      }).catch(() => {}).finally(() => {
         refreshingStaleCache.value = false;
       });
     } else {
@@ -478,12 +539,23 @@ watch(
         el.scrollTop = el.scrollHeight - el.clientHeight - saved.distFromBottom;
         savedScrollPositions.delete(roomId);
       } else {
-        scrollToInitialPosition(roomId, el);
+        await scrollToInitialPosition(roomId, el);
+        if (isStale()) return;
       }
       settled.value = true;
       switching.value = false;
       prevScrollHeight = el?.scrollHeight ?? 0;
       checkScroll();
+      // Post-settle scroll correction (same as cache-hit path above)
+      if (isNearBottom.value && el) {
+        const doCorrection = () => {
+          if (isStale() || !isNearBottom.value) return;
+          el.scrollTop = el.scrollHeight + 9999;
+          prevScrollHeight = el.scrollHeight;
+        };
+        requestAnimationFrame(doCorrection);
+        setTimeout(doCorrection, 200);
+      }
       nextTick(() => checkVisibleForRead());
     }
   },

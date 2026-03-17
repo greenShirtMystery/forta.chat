@@ -2347,8 +2347,23 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     }
   };
 
+  /** In-flight loadRoomMessages promises keyed by roomId.
+   *  Prevents concurrent duplicate loads (e.g. background preload + UI open) that
+   *  would call setMessages twice and cause visible incremental scroll steps. */
+  const loadingRoomsMap = new Map<string, Promise<void>>();
+
   /** Load timeline events for a room and convert to Messages */
-  const loadRoomMessages = async (roomId: string) => {
+  const loadRoomMessages = (roomId: string): Promise<void> => {
+    const inflight = loadingRoomsMap.get(roomId);
+    if (inflight) return inflight;
+    const promise = loadRoomMessagesImpl(roomId).finally(() => {
+      loadingRoomsMap.delete(roomId);
+    });
+    loadingRoomsMap.set(roomId, promise);
+    return promise;
+  };
+
+  const loadRoomMessagesImpl = async (roomId: string) => {
     try {
       const matrixService = getMatrixClientService();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -3192,6 +3207,10 @@ export const useChatStore = defineStore(NAMESPACE, () => {
           m => m.status !== MessageStatus.sending && m.status !== MessageStatus.failed,
         );
         backfillCallInfo(cleaned);
+        // Sort by timestamp: IndexedDB getAll() returns records ordered by primary
+        // key (event ID), not by insertion order or timestamp, so cached messages
+        // arrive in wrong order and must be re-sorted before display.
+        cleaned.sort((a, b) => a.timestamp - b.timestamp);
         // Sanitize cached messages that may contain raw Matrix IDs
         for (const m of cleaned) {
           if (m.content.includes("@") && /@[a-f0-9]{20,}:/i.test(m.content)) {
