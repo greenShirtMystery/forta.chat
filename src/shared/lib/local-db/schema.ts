@@ -33,8 +33,7 @@ export type OperationType =
   | "remove_reaction"
   | "send_poll"
   | "vote_poll"
-  | "send_transfer"
-  | "send_read_receipt";
+  | "send_transfer";
 
 // ---------------------------------------------------------------------------
 // Table interfaces
