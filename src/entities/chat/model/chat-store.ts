@@ -468,9 +468,19 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     const room = getRoomById(roomId);
     if (room) room.unreadCount = 0;
 
-    // Persist to Dexie (was missing — caused unread count resurrection after reload)
+    // Persist to Dexie + advance inbound watermark
     if (chatDbKitRef.value) {
-      chatDbKitRef.value.eventWriter.clearUnread(roomId).catch(() => {});
+      const roomMsgs = messages.value[roomId];
+      const myAddr = useAuthStore().address;
+      const lastInboundTs = roomMsgs
+        ?.filter(m => m.senderId !== myAddr)
+        .reduce((max, m) => (m.timestamp > max ? m.timestamp : max), 0) ?? 0;
+
+      if (lastInboundTs > 0) {
+        chatDbKitRef.value.rooms.markAsRead(roomId, lastInboundTs).catch(() => {});
+      } else {
+        chatDbKitRef.value.eventWriter.clearUnread(roomId).catch(() => {});
+      }
     }
   };
 
@@ -531,7 +541,8 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     if (chatDbKitRef.value) {
       // Single source of truth: always use Dexie when initialized
       // (returns [] while liveQuery hasn't responded — UI uses dexieMessagesReady to show skeleton)
-      msgs = localToMessages(dexieMessages.value, activeRoomOutboundWatermark.value);
+      const myAddr = useAuthStore().address;
+      msgs = localToMessages(dexieMessages.value, activeRoomOutboundWatermark.value, myAddr);
     } else {
       // Fallback: use old in-memory store only when Dexie not yet initialized
       msgs = activeRoomId.value ? (messages.value[activeRoomId.value] ?? []) : [];
@@ -578,7 +589,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
           content: lr.lastMessagePreview,
           timestamp: lr.lastMessageTimestamp ?? lr.updatedAt,
           status: deriveOutboundStatus(
-              "synced",
+              lr.lastMessageLocalStatus ?? "synced",
               lr.lastMessageTimestamp ?? 0,
               lr.lastReadOutboundTs ?? 0,
             ),
@@ -755,12 +766,15 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         lastMessageSenderId: r.lastMessage?.senderId,
         lastMessageType: r.lastMessage?.type,
         lastMessageEventId: r.lastMessage?.id || undefined,
+        lastMessageLocalStatus: r.lastMessage?.status === MessageStatus.sending ? "pending"
+          : r.lastMessage?.status === MessageStatus.failed ? "failed"
+          : "synced" as import("@/shared/lib/local-db").LocalMessageStatus,
       }));
 
       // Preserve existing watermarks (bulkPut overwrites entire rows)
       (async () => {
         try {
-          const existingRooms = await dbKit.rooms.getJoinedRooms();
+          const existingRooms = await dbKit.rooms.getAllRooms();
           const existingMap = new Map(existingRooms.map(r => [r.id, r]));
           for (const lr of localRooms) {
             const existing = existingMap.get(lr.id);
@@ -984,13 +998,16 @@ export const useChatStore = defineStore(NAMESPACE, () => {
           lastMessageSenderId: r.lastMessage?.senderId,
           lastMessageType: r.lastMessage?.type,
           lastMessageEventId: r.lastMessage?.id || undefined,
+          lastMessageLocalStatus: r.lastMessage?.status === MessageStatus.sending ? "pending"
+            : r.lastMessage?.status === MessageStatus.failed ? "failed"
+            : "synced" as import("@/shared/lib/local-db").LocalMessageStatus,
         });
       }
       if (changedLocalRooms.length > 0) {
         // Preserve existing watermarks (bulkPut overwrites entire rows)
         (async () => {
           try {
-            const existingRooms = await dbKit.rooms.getJoinedRooms();
+            const existingRooms = await dbKit.rooms.getAllRooms();
             const existingMap = new Map(existingRooms.map(r => [r.id, r]));
             for (const lr of changedLocalRooms) {
               const existing = existingMap.get(lr.id);

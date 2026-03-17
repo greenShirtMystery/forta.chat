@@ -66,6 +66,8 @@ export interface LocalRoom {
     senderAddress: string;
     timestamp: number;
   } | null;
+  /** Transport status of last message (pending/syncing/synced/failed — NOT read/delivered) */
+  lastMessageLocalStatus?: LocalMessageStatus;
 
   // Sync metadata
   syncedAt: number;              // last sync from server
