@@ -1066,7 +1066,7 @@ defineExpose({ scrollToMessage, setSearchQuery });
         <!-- Unread messages banner -->
         <div
           v-else-if="item.type === 'unread-banner'"
-          data-unread-banner
+          data-new-messages-divider
         >
           <UnreadBanner :count="item.unreadCount ?? 0" />
         </div>
