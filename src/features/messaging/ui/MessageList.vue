@@ -296,6 +296,11 @@ const handleReturnToLatest = async () => {
   scrollToBottom();
 };
 
+/** Grace period: don't auto-dismiss banner right after room open.
+ *  The banner may be near the bottom of a short message list, and the
+ *  initial checkScroll() would immediately dismiss it before the user sees it. */
+let bannerDismissAllowed = false;
+
 /** Check if user is scrolled near the bottom */
 const checkScroll = () => {
   const el = getScrollContainer();
@@ -306,7 +311,7 @@ const checkScroll = () => {
   showScrollFab.value = distFromBottom > 300;
   if (isNearBottom.value) {
     newMessageCount.value = 0;
-    if (hasBanner()) dismissBanner();
+    if (hasBanner() && bannerDismissAllowed) dismissBanner();
   }
 };
 
@@ -394,6 +399,7 @@ watch(
     recentMessageIds.value.clear();
     isNearBottom.value = true;
     prefetching.value = false;
+    bannerDismissAllowed = false;
     lastScrollTop = 0;
     lastScrollTime = 0;
     scrollVelocity = 0;
@@ -538,6 +544,9 @@ watch(
       switching.value = false;
       prevScrollHeight = el?.scrollHeight ?? 0;
       checkScroll();
+
+      // Allow banner dismissal after user has had time to see it
+      setTimeout(() => { bannerDismissAllowed = true; }, 2000);
 
       // Start read tracking shortly after render.
       // Elements are already queued via observeElement(); startTracking()
