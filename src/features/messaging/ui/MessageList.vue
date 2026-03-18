@@ -173,6 +173,11 @@ const refreshingStaleCache = ref(false); // true when showing stale cached messa
 const hasMore = ref(true);
 const newMessageCount = ref(0);
 
+const fabBadgeCount = computed(() => {
+  const c = hasBanner() ? bannerState.value.frozenUnreadCount : newMessageCount.value;
+  return c > 99 ? '99+' : c;
+});
+
 // --- Predictive prefetch state ---
 const LOAD_THRESHOLD = 1200; // px from top — start loading (was 400)
 const PREFETCH_THRESHOLD = 2500; // px from top — background prefetch zone
@@ -342,7 +347,7 @@ const handleFabClick = () => {
   if (hasBanner()) {
     const bannerIdx = virtualItems.value.findIndex(item => item.type === "unread-banner");
     if (bannerIdx >= 0) {
-      scrollerRef.value?.scrollToIndex(bannerIdx);
+      scrollerRef.value?.scrollToIndex(bannerIdx, { align: "start" });
       return;
     }
   }
@@ -440,7 +445,6 @@ watch(
 
     // If no anchor was set, do normal load
     if (anchorItemIndex === -1 && chatStore.activeMessages.length === 0) {
-      const t0 = Date.now();
       const cacheAge = await chatStore.loadCachedMessages(roomId);
       if (isStale()) return;
 
@@ -498,9 +502,9 @@ watch(
       if (anchorItemIndex >= 0 && hasBanner()) {
         const bannerIdx = virtualItems.value.findIndex(item => item.type === "unread-banner");
         if (bannerIdx >= 0) {
-          scrollerRef.value?.scrollToIndex(bannerIdx);
+          scrollerRef.value?.scrollToIndex(bannerIdx, { align: "start" });
         } else {
-          scrollerRef.value?.scrollToIndex(anchorItemIndex);
+          scrollerRef.value?.scrollToIndex(anchorItemIndex, { align: "start" });
         }
       } else if (el) {
         el.scrollTop = el.scrollHeight + 9999;
@@ -541,6 +545,7 @@ watch(lastMessageIdentity, (newVal, oldVal) => {
   // Messages appeared for the first time (e.g. Dexie async load after room open)
   // — always scroll to bottom so the user sees the latest messages.
   if (!oldVal) {
+    if (!settled.value) return; // Don't fight the room-switch watcher
     scrollToBottom();
     return;
   }
@@ -1035,10 +1040,8 @@ defineExpose({ scrollToMessage, setSearchQuery });
         <!-- Call event card (bubble-style, aligned like a message) -->
         <div
           v-else-if="item.type === 'message' && item.message?.callInfo"
-          v-track-read
           class="mx-auto max-w-6xl"
           :data-message-id="item.message.id"
-          :data-message-ts="item.message.senderId !== authStore.address ? item.message.timestamp : undefined"
           :style="(item.index ?? 0) > 0 ? { paddingTop: 'var(--message-spacing)' } : {}"
         >
           <div
@@ -1058,13 +1061,11 @@ defineExpose({ scrollToMessage, setSearchQuery });
           </div>
         </div>
 
-        <!-- System message (join/leave/kick/name change) -->
+        <!-- System message (join/leave/kick/name change) — not tracked for read watermark -->
         <div
           v-else-if="item.type === 'message' && item.message && item.message.type === MessageType.system"
-          v-track-read
           class="mx-auto flex max-w-6xl justify-center py-2"
           :data-message-id="item.message.id"
-          :data-message-ts="item.message.senderId !== authStore.address ? item.message.timestamp : undefined"
         >
           <span class="rounded-full bg-neutral-grad-0/60 px-3 py-1 text-center text-[11px] text-text-on-main-bg-color">
             {{ resolveSystemMsg(item.message) }}
@@ -1165,7 +1166,7 @@ defineExpose({ scrollToMessage, setSearchQuery });
           v-if="newMessageCount > 0 || hasBanner()"
           class="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-color-bg-ac px-1 text-[10px] font-medium text-text-on-bg-ac-color"
         >
-          {{ (() => { const c = hasBanner() ? bannerState.frozenUnreadCount : newMessageCount; return c > 99 ? '99+' : c; })() }}
+          {{ fabBadgeCount }}
         </span>
       </button>
     </transition>

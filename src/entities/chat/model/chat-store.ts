@@ -1398,14 +1398,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       await chatDbKitRef.value.rooms.markAsRead(roomId, timestamp);
     }
 
-    // 2. Update in-memory room unread count
-    const room = getRoomById(roomId);
-    if (room) {
-      room.unreadCount = 0;
-      triggerRef(rooms);
-    }
-
-    // 3. Send Matrix read receipt for the event at this timestamp
+    // 2. Send Matrix read receipt for the event at this timestamp
     try {
       const matrixService = getMatrixClientService();
       const matrixRoom = matrixService.getRoom(roomId) as any;

@@ -83,7 +83,7 @@ export function useReadTracker(options: ReadTrackerOptions) {
 
       for (const [msgId, since] of visibleSince) {
         if (now - since >= DWELL_TIME_MS) {
-          const el = root.querySelector(`[data-message-id="${msgId}"]`) as HTMLElement | null;
+          const el = root.querySelector(`[data-message-id="${CSS.escape(msgId)}"]`) as HTMLElement | null;
           if (el) promoteToRead(el);
           visibleSince.delete(msgId);
         }
