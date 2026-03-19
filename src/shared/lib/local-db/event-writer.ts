@@ -120,17 +120,43 @@ export class EventWriter {
     activeRoomId: string | null,
   ): Promise<"inserted" | "updated" | "duplicate"> {
     const localMsg = this.toLocalMessage(parsed);
-    const result = await this.messageRepo.upsertFromServer(localMsg);
 
-    if (result === "inserted" || result === "updated") {
-      await this.updateRoomPreview(parsed);
-    }
+    // All DB writes in a single atomic transaction:
+    // message upsert + room preview + unread increment
+    let result: "inserted" | "updated" | "duplicate" = "duplicate";
 
-    if (result === "inserted") {
-      // Only increment unread for OTHER people's messages in NON-ACTIVE rooms
-      if (parsed.senderId !== myAddress && parsed.roomId !== activeRoomId) {
-        await this.incrementUnread(parsed.roomId);
+    await this.db.transaction("rw", [this.db.messages, this.db.rooms], async () => {
+      result = await this.messageRepo.upsertFromServer(localMsg);
+
+      if (result === "inserted" || result === "updated") {
+        // Update room preview
+        const preview = this.getPreviewText(
+          parsed.type,
+          parsed.content,
+          parsed.transferInfo?.amount,
+        );
+        await this.roomRepo.updateLastMessage(
+          parsed.roomId,
+          preview,
+          parsed.timestamp,
+          parsed.senderId,
+          parsed.type,
+          parsed.eventId,
+        );
       }
+
+      if (result === "inserted") {
+        // Increment unread atomically (inside same transaction — no race with markAsRead)
+        if (parsed.senderId !== myAddress && parsed.roomId !== activeRoomId) {
+          const room = await this.roomRepo.getRoom(parsed.roomId);
+          if (room) {
+            await this.roomRepo.setUnreadCount(parsed.roomId, room.unreadCount + 1);
+          }
+        }
+      }
+    });
+
+    if ((result as string) === "inserted") {
       this.onChange?.(parsed.roomId);
     }
 
