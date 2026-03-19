@@ -3256,62 +3256,13 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         return;
       }
 
-      // Own-echo dedup: suppress echoes of messages sent from THIS device,
-      // but allow cross-device messages (same user, different device) through
-      // the normal processing pipeline so they get fully decrypted and stored.
-      const matrixService = getMatrixClientService();
-      const myUserId = matrixService.getUserId();
-      if (myUserId && raw.sender === myUserId) {
+      // Own-echo: skip local SDK temporary event IDs (~! prefix) — real $ event follows
+      const matrixService3 = getMatrixClientService();
+      const myUserId3 = matrixService3.getUserId();
+      if (myUserId3 && raw.sender === myUserId3 && chatDbKitRef.value) {
         const eventId = raw.event_id as string;
-
-        // Always skip local SDK event IDs (~! prefix) — the real $ event will follow
         if (eventId.startsWith("~")) {
           return;
-        }
-
-        if (chatDbKitRef.value) {
-          // Check if this is an echo of a message sent from THIS device.
-          // Match by clientId (unsigned.transaction_id) against pending messages.
-          const transactionId = (raw.unsigned as any)?.transaction_id;
-          if (transactionId) {
-            const pending = await chatDbKitRef.value.messages.getByClientId(transactionId);
-            if (pending) {
-              // This device sent it — confirmSent() already handled or will handle
-              return;
-            }
-          }
-
-          // Also check: if the eventId already exists in Dexie, skip (duplicate sync)
-          const existing = await chatDbKitRef.value.messages.getByEventId(eventId);
-          if (existing) return;
-
-          // Bastyon SDK doesn't set transaction_id — fall back to matching pending
-          // messages by checking if any ACTIVELY SENDING message in this room could be
-          // this echo. Only consider "pending"/"syncing" (not "failed") and only if
-          // created very recently (within 10s) to minimize false suppression of
-          // cross-device messages.
-          const pendingMsgs = await chatDbKitRef.value.messages.getPendingMessages(roomId);
-          const now = Date.now();
-          const eventTs = (raw.origin_server_ts as number) ?? now;
-          const recentSending = pendingMsgs.filter(m =>
-            m.senderId === matrixIdToAddress(myUserId) &&
-            (m.status === "pending" || m.status === "syncing") &&
-            Math.abs(eventTs - m.timestamp) < 10_000
-          );
-          if (recentSending.length > 0) {
-            // Likely an echo from this device — confirmSent() will reconcile
-            return;
-          }
-
-          // This is a cross-device message — fall through to normal processing.
-          // Do NOT return here — let the standard decrypt-and-write pipeline handle it.
-        } else {
-          // Legacy path (no Dexie): check in-memory pending messages
-          const roomMsgs = messages.value[roomId];
-          const hasPending = roomMsgs?.some(
-            (m) => m.senderId === matrixIdToAddress(myUserId) && m.status === MessageStatus.sending
-          );
-          if (hasPending) return;
         }
       }
 
@@ -3483,6 +3434,19 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         replyTo,
         forwardedFrom,
       };
+
+      // Own-echo dedup for Dexie path: skip in-memory addMessage,
+      // write full message to Dexie so room preview gets correct content
+      if (myUserId3 && raw.sender === myUserId3 && chatDbKitRef.value) {
+        const pendingMsgs = await chatDbKitRef.value.messages.getPendingMessages(roomId);
+        if (pendingMsgs.length > 0) {
+          // Echo for pending message — createLocal already updated room preview
+          return;
+        }
+        // From another device or confirmSent already ran — write with full content
+        dexieWriteMessage(message, roomId, raw);
+        return;
+      }
 
       addMessage(roomId, message);
       dexieWriteMessage(message, roomId, raw);
