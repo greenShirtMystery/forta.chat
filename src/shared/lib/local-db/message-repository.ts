@@ -304,6 +304,33 @@ export class MessageRepository {
       });
   }
 
+  /** Update upload progress for a media message */
+  async updateUploadProgress(clientId: string, progress: number): Promise<void> {
+    await this.db.messages
+      .where("clientId")
+      .equals(clientId)
+      .modify({ uploadProgress: progress });
+  }
+
+  /** Mark media upload as complete — clear upload fields, update fileInfo URL */
+  async confirmMediaSent(
+    clientId: string,
+    eventId: string,
+    serverFileInfo: LocalMessage["fileInfo"],
+  ): Promise<void> {
+    await this.db.messages
+      .where("clientId")
+      .equals(clientId)
+      .modify({
+        eventId,
+        status: "synced" as LocalMessageStatus,
+        serverTs: Date.now(),
+        fileInfo: serverFileInfo,
+        uploadProgress: undefined,
+        localBlobUrl: undefined,
+      });
+  }
+
   /** Get the room ID for a given event (used by sync engine) */
   async getRoomIdForEvent(eventId: string): Promise<string | undefined> {
     const msg = await this.getByEventId(eventId);
