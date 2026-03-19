@@ -364,9 +364,9 @@ export class MatrixClientService {
   }
 
   /** Send encrypted text message. Returns server event_id. */
-  async sendEncryptedText(roomId: string, content: Record<string, unknown>): Promise<string> {
+  async sendEncryptedText(roomId: string, content: Record<string, unknown>, txnId?: string): Promise<string> {
     if (!this.client) throw new Error("Client not initialized");
-    const res = await this.client.sendEvent(roomId, "m.room.message", content);
+    const res = await this.client.sendEvent(roomId, "m.room.message", content, txnId);
     return (res as { event_id: string }).event_id;
   }
 
@@ -507,6 +507,32 @@ export class MatrixClientService {
       await this.client.scrollback(room, limit);
     } catch (e) {
       console.warn("[matrix-client] scrollback error:", e);
+    }
+  }
+
+  /** Fetch a specific event and its surrounding context from the server.
+   *  Uses the Matrix SDK timeline API. Returns raw timeline events. */
+  async fetchEventContext(roomId: string, eventId: string, limit = 50): Promise<unknown[]> {
+    if (!this.client) return [];
+    try {
+      const room = this.client.getRoom(roomId);
+      if (!room) return [];
+
+      const timelineSet = room.getUnfilteredTimelineSet();
+      const timeline = await this.client.getEventTimeline(timelineSet, eventId);
+      if (!timeline) return [];
+
+      try {
+        await this.client.paginateEventTimeline(timeline, { backwards: true, limit: Math.floor(limit / 2) });
+      } catch { /* may already be at start */ }
+      try {
+        await this.client.paginateEventTimeline(timeline, { backwards: false, limit: Math.floor(limit / 2) });
+      } catch { /* may already be at end */ }
+
+      return timeline.getEvents() ?? [];
+    } catch (e) {
+      console.warn("[matrix-client] fetchEventContext error:", e);
+      return [];
     }
   }
 

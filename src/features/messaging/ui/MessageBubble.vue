@@ -32,6 +32,7 @@ interface Props {
   showAvatar: boolean;
   isGroup?: boolean;
   isFirstInGroup?: boolean;
+  myAddress?: string;
 }
 
 const props = withDefaults(defineProps<Props>(), { isGroup: false, isFirstInGroup: false });
@@ -50,6 +51,8 @@ const emit = defineEmits<{
   addReaction: [message: Message];
   pollVote: [messageId: string, optionId: string];
   pollEnd: [messageId: string];
+  delete: [message: Message];
+  forward: [message: Message];
 }>();
 
 const handleToggleReaction = (emoji: string) => {
@@ -85,21 +88,29 @@ const handleRightClick = (e: MouseEvent) => {
   emit("contextmenu", { message: props.message, x: e.clientX, y: e.clientY });
 };
 
-const { offsetX: swipeOffsetX, isSwiping, onTouchstart, onTouchmove, onTouchend } = useSwipeGesture({
-  direction: "left",
+// Use direction "both" always — callbacks read live props to handle virtual scroller recycling
+const { offsetX: swipeOffsetX, isSwiping, swipeDirection, onTouchstart, onTouchmove, onTouchend } = useSwipeGesture({
+  direction: "both",
   threshold: 60,
   maxOffset: 100,
-  onTrigger: () => {
-    emit("reply", props.message);
-  },
+  onTriggerLeft: () => { emit("reply", props.message); },
+  onTriggerRight: () => { /* reveal actions — handled via swipeDirection ref */ },
+  haptic: true,
 });
 
-const swipeStyle = computed(() => ({
-  transform: swipeOffsetX.value > 0 ? `translateX(${-swipeOffsetX.value}px)` : undefined,
-  transition: isSwiping.value ? "none" : "transform 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94)",
-}));
+const swipeStyle = computed(() => {
+  if (swipeOffsetX.value <= 0) return { transition: isSwiping.value ? "none" : "transform 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94)" };
+  const sign = swipeDirection.value === "right" ? 1 : -1;
+  return {
+    transform: `translateX(${sign * swipeOffsetX.value}px)`,
+    transition: isSwiping.value ? "none" : "transform 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94)",
+  };
+});
 
 const swipeArrowOpacity = computed(() => Math.min(swipeOffsetX.value / 60, 1));
+
+const onDeleteAction = () => { emit("delete", props.message); };
+const onForwardAction = () => { emit("forward", props.message); };
 
 const chatStore = useChatStore();
 const themeStore = useThemeStore();
@@ -222,7 +233,8 @@ const handleReply = () => {
 const replyPreviewText = computed(() => {
   const reply = props.message.replyTo;
   if (!reply) return "";
-  if (!reply.senderId && !reply.content) return "Deleted message";
+  if (reply.deleted) return t("message.deleted");
+  if (!reply.senderId && !reply.content) return "...";
   if (reply.type === MessageType.image) return "Photo";
   if (reply.type === MessageType.video) return "Video";
   if (reply.type === MessageType.videoCircle) return "Video message";
@@ -230,6 +242,13 @@ const replyPreviewText = computed(() => {
   if (reply.type === MessageType.file) return reply.content || "File";
   const text = stripBastyonLinks(stripMentionAddresses(reply.content));
   return (text.length > 100 ? text.slice(0, 100) + "\u2026" : text) || "...";
+});
+
+const replyPreviewSender = computed(() => {
+  const reply = props.message.replyTo;
+  if (!reply || reply.deleted) return "";
+  if (!reply.senderId) return "...";
+  return chatStore.getDisplayName(reply.senderId);
 });
 </script>
 
@@ -247,9 +266,9 @@ const replyPreviewText = computed(() => {
     @touchmove="onTouchmove"
     @touchend="onTouchend"
   >
-    <!-- Swipe reply arrow (behind message) -->
+    <!-- Swipe reply arrow (behind message, shown on left swipe) -->
     <div
-      v-if="swipeOffsetX > 0"
+      v-if="swipeOffsetX > 0 && swipeDirection === 'left'"
       class="absolute right-0 top-1/2 flex h-8 w-8 translate-x-10 -translate-y-1/2 items-center justify-center rounded-full bg-color-bg-ac text-white"
       :style="{ opacity: swipeArrowOpacity }"
     >
@@ -257,6 +276,24 @@ const replyPreviewText = computed(() => {
         <polyline points="9 17 4 12 9 7" />
         <path d="M20 18v-2a4 4 0 0 0-4-4H4" />
       </svg>
+    </div>
+
+    <!-- Reveal actions (behind message, for own messages on right swipe) -->
+    <div
+      v-if="isOwn && swipeDirection === 'right' && swipeOffsetX > 0"
+      class="absolute left-0 top-0 bottom-0 flex items-center gap-1 pl-2"
+      :class="{ 'pointer-events-none': isSwiping }"
+    >
+      <button @click="onDeleteAction" class="flex size-10 items-center justify-center rounded-full bg-color-bad/20 text-color-bad">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+        </svg>
+      </button>
+      <button @click="onForwardAction" class="flex size-10 items-center justify-center rounded-full bg-color-bg-ac/20 text-color-bg-ac">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="15 17 20 12 15 7" /><path d="M4 18v-2a4 4 0 0 1 4-4h12" />
+        </svg>
+      </button>
     </div>
 
     <!-- Selection checkbox -->
@@ -282,7 +319,7 @@ const replyPreviewText = computed(() => {
     <div v-else-if="!chatStore.selectionMode && !props.isOwn && themeStore.showAvatarsInChat" class="w-8 shrink-0" />
 
     <!-- Bubble container -->
-    <div class="relative min-w-0 max-w-[80%] overflow-hidden">
+    <div class="relative min-w-0 max-w-[85%] md:max-w-[80%] lg:max-w-[65%] overflow-hidden">
       <!-- Reply action (on hover) -->
       <button
         class="absolute top-1/2 hidden h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full text-text-on-main-bg-color opacity-0 transition-opacity hover:bg-neutral-grad-0 group-hover:flex group-hover:opacity-100"
@@ -325,16 +362,16 @@ const replyPreviewText = computed(() => {
         <!-- Reply preview -->
         <div
           v-if="message.replyTo"
-          class="mx-2 mt-1.5 flex cursor-pointer items-start gap-1.5 overflow-hidden rounded-lg px-2 py-1"
-          :class="props.isOwn ? 'bg-white/10' : 'bg-black/5'"
-          @click.stop="emit('scrollToReply', message.replyTo.id)"
+          class="mx-2 mt-1.5 flex items-start gap-1.5 overflow-hidden rounded-lg px-2 py-1"
+          :class="[props.isOwn ? 'bg-white/10' : 'bg-black/5', message.replyTo?.deleted ? 'cursor-default' : 'cursor-pointer']"
+          @click.stop="!message.replyTo?.deleted && emit('scrollToReply', message.replyTo.id)"
         >
           <div class="w-0.5 shrink-0 self-stretch rounded-full"
             :class="props.isOwn ? 'bg-white/70' : 'bg-color-bg-ac'" />
           <div class="min-w-0 flex-1">
             <div class="truncate text-[11px] font-medium"
               :class="props.isOwn ? 'text-white/70' : 'text-color-bg-ac'">
-              {{ message.replyTo.senderId ? chatStore.getDisplayName(message.replyTo.senderId) : 'Deleted message' }}
+              {{ replyPreviewSender }}
             </div>
             <div class="truncate text-[11px] opacity-70">{{ replyPreviewText }}</div>
           </div>
@@ -384,7 +421,7 @@ const replyPreviewText = computed(() => {
 
         <!-- Reactions row -->
         <div v-if="message.reactions && Object.keys(message.reactions).length" class="px-2 pb-1">
-          <ReactionRow :reactions="message.reactions" :is-own="props.isOwn" @toggle="handleToggleReaction" @add-reaction="handleAddReaction" />
+          <ReactionRow :reactions="message.reactions" :is-own="props.isOwn" :my-address="props.myAddress" :message-id="message.id" @toggle="handleToggleReaction" @add-reaction="handleAddReaction" />
         </div>
 
       </div>
@@ -406,7 +443,7 @@ const replyPreviewText = computed(() => {
           <MessageStatusIcon v-if="props.isOwn" :status="msgStatus" />
         </div>
         <!-- Reactions row -->
-        <ReactionRow v-if="message.reactions && Object.keys(message.reactions).length" :reactions="message.reactions" :is-own="props.isOwn" @toggle="handleToggleReaction" @add-reaction="handleAddReaction" />
+        <ReactionRow v-if="message.reactions && Object.keys(message.reactions).length" :reactions="message.reactions" :is-own="props.isOwn" :my-address="props.myAddress" :message-id="message.id" @toggle="handleToggleReaction" @add-reaction="handleAddReaction" />
       </div>
 
       <!-- Video message -->
@@ -424,16 +461,16 @@ const replyPreviewText = computed(() => {
         <!-- Reply preview -->
         <div
           v-if="message.replyTo"
-          class="mx-2 mt-1.5 flex cursor-pointer items-start gap-1.5 overflow-hidden rounded-lg px-2 py-1"
-          :class="props.isOwn ? 'bg-white/10' : 'bg-black/5'"
-          @click.stop="emit('scrollToReply', message.replyTo.id)"
+          class="mx-2 mt-1.5 flex items-start gap-1.5 overflow-hidden rounded-lg px-2 py-1"
+          :class="[props.isOwn ? 'bg-white/10' : 'bg-black/5', message.replyTo?.deleted ? 'cursor-default' : 'cursor-pointer']"
+          @click.stop="!message.replyTo?.deleted && emit('scrollToReply', message.replyTo.id)"
         >
           <div class="w-0.5 shrink-0 self-stretch rounded-full"
             :class="props.isOwn ? 'bg-white/70' : 'bg-color-bg-ac'" />
           <div class="min-w-0 flex-1">
             <div class="truncate text-[11px] font-medium"
               :class="props.isOwn ? 'text-white/70' : 'text-color-bg-ac'">
-              {{ message.replyTo.senderId ? chatStore.getDisplayName(message.replyTo.senderId) : 'Deleted message' }}
+              {{ replyPreviewSender }}
             </div>
             <div class="truncate text-[11px] opacity-70">{{ replyPreviewText }}</div>
           </div>
@@ -472,7 +509,7 @@ const replyPreviewText = computed(() => {
         </div>
         <!-- Reactions row -->
         <div v-if="message.reactions && Object.keys(message.reactions).length" class="px-2 pb-1">
-          <ReactionRow :reactions="message.reactions" :is-own="props.isOwn" @toggle="handleToggleReaction" @add-reaction="handleAddReaction" />
+          <ReactionRow :reactions="message.reactions" :is-own="props.isOwn" :my-address="props.myAddress" :message-id="message.id" @toggle="handleToggleReaction" @add-reaction="handleAddReaction" />
         </div>
       </div>
 
@@ -490,16 +527,16 @@ const replyPreviewText = computed(() => {
         <!-- Reply preview -->
         <div
           v-if="message.replyTo"
-          class="mb-1 flex cursor-pointer items-start gap-1.5 overflow-hidden rounded-lg px-2 py-1"
-          :class="props.isOwn ? 'bg-white/10' : 'bg-black/5'"
-          @click.stop="emit('scrollToReply', message.replyTo.id)"
+          class="mb-1 flex items-start gap-1.5 overflow-hidden rounded-lg px-2 py-1"
+          :class="[props.isOwn ? 'bg-white/10' : 'bg-black/5', message.replyTo?.deleted ? 'cursor-default' : 'cursor-pointer']"
+          @click.stop="!message.replyTo?.deleted && emit('scrollToReply', message.replyTo.id)"
         >
           <div class="w-0.5 shrink-0 self-stretch rounded-full"
             :class="props.isOwn ? 'bg-white/70' : 'bg-color-bg-ac'" />
           <div class="min-w-0 flex-1">
             <div class="truncate text-[11px] font-medium"
               :class="props.isOwn ? 'text-white/70' : 'text-color-bg-ac'">
-              {{ message.replyTo.senderId ? chatStore.getDisplayName(message.replyTo.senderId) : 'Deleted message' }}
+              {{ replyPreviewSender }}
             </div>
             <div class="truncate text-[11px] opacity-70">{{ replyPreviewText }}</div>
           </div>
@@ -510,7 +547,7 @@ const replyPreviewText = computed(() => {
           <MessageStatusIcon v-if="props.isOwn" :status="msgStatus" />
         </div>
         <!-- Reactions row -->
-        <ReactionRow v-if="message.reactions && Object.keys(message.reactions).length" :reactions="message.reactions" :is-own="props.isOwn" @toggle="handleToggleReaction" @add-reaction="handleAddReaction" />
+        <ReactionRow v-if="message.reactions && Object.keys(message.reactions).length" :reactions="message.reactions" :is-own="props.isOwn" :my-address="props.myAddress" :message-id="message.id" @toggle="handleToggleReaction" @add-reaction="handleAddReaction" />
       </div>
 
       <!-- File message -->
@@ -527,16 +564,16 @@ const replyPreviewText = computed(() => {
         <!-- Reply preview -->
         <div
           v-if="message.replyTo"
-          class="mb-1 flex cursor-pointer items-start gap-1.5 overflow-hidden rounded-lg px-2 py-1"
-          :class="props.isOwn ? 'bg-white/10' : 'bg-black/5'"
-          @click.stop="emit('scrollToReply', message.replyTo.id)"
+          class="mb-1 flex items-start gap-1.5 overflow-hidden rounded-lg px-2 py-1"
+          :class="[props.isOwn ? 'bg-white/10' : 'bg-black/5', message.replyTo?.deleted ? 'cursor-default' : 'cursor-pointer']"
+          @click.stop="!message.replyTo?.deleted && emit('scrollToReply', message.replyTo.id)"
         >
           <div class="w-0.5 shrink-0 self-stretch rounded-full"
             :class="props.isOwn ? 'bg-white/70' : 'bg-color-bg-ac'" />
           <div class="min-w-0 flex-1">
             <div class="truncate text-[11px] font-medium"
               :class="props.isOwn ? 'text-white/70' : 'text-color-bg-ac'">
-              {{ message.replyTo.senderId ? chatStore.getDisplayName(message.replyTo.senderId) : 'Deleted message' }}
+              {{ replyPreviewSender }}
             </div>
             <div class="truncate text-[11px] opacity-70">{{ replyPreviewText }}</div>
           </div>
@@ -568,7 +605,7 @@ const replyPreviewText = computed(() => {
           <MessageStatusIcon v-if="props.isOwn" :status="msgStatus" />
         </div>
         <!-- Reactions row -->
-        <ReactionRow v-if="message.reactions && Object.keys(message.reactions).length" :reactions="message.reactions" :is-own="props.isOwn" @toggle="handleToggleReaction" @add-reaction="handleAddReaction" />
+        <ReactionRow v-if="message.reactions && Object.keys(message.reactions).length" :reactions="message.reactions" :is-own="props.isOwn" :my-address="props.myAddress" :message-id="message.id" @toggle="handleToggleReaction" @add-reaction="handleAddReaction" />
       </div>
 
       <!-- Poll message -->
@@ -596,7 +633,7 @@ const replyPreviewText = computed(() => {
           <span class="text-[10px]">{{ time }}</span>
           <MessageStatusIcon v-if="props.isOwn" :status="msgStatus" />
         </div>
-        <ReactionRow v-if="message.reactions && Object.keys(message.reactions).length" :reactions="message.reactions" :is-own="props.isOwn" @toggle="handleToggleReaction" @add-reaction="handleAddReaction" />
+        <ReactionRow v-if="message.reactions && Object.keys(message.reactions).length" :reactions="message.reactions" :is-own="props.isOwn" :my-address="props.myAddress" :message-id="message.id" @toggle="handleToggleReaction" @add-reaction="handleAddReaction" />
       </div>
 
       <!-- Transfer message -->
@@ -618,7 +655,7 @@ const replyPreviewText = computed(() => {
           <span class="text-[10px]">{{ time }}</span>
           <MessageStatusIcon v-if="props.isOwn" :status="msgStatus" />
         </div>
-        <ReactionRow v-if="message.reactions && Object.keys(message.reactions).length" :reactions="message.reactions" :is-own="props.isOwn" @toggle="handleToggleReaction" @add-reaction="handleAddReaction" />
+        <ReactionRow v-if="message.reactions && Object.keys(message.reactions).length" :reactions="message.reactions" :is-own="props.isOwn" :my-address="props.myAddress" :message-id="message.id" @toggle="handleToggleReaction" @add-reaction="handleAddReaction" />
       </div>
 
       <!-- Text message (default) -->
@@ -646,16 +683,16 @@ const replyPreviewText = computed(() => {
         <!-- Reply preview -->
         <div
           v-if="message.replyTo"
-          class="mb-1 flex cursor-pointer items-start gap-1.5 overflow-hidden rounded-lg px-2 py-1"
-          :class="props.isOwn ? 'bg-white/10' : 'bg-black/5'"
-          @click.stop="emit('scrollToReply', message.replyTo.id)"
+          class="mb-1 flex items-start gap-1.5 overflow-hidden rounded-lg px-2 py-1"
+          :class="[props.isOwn ? 'bg-white/10' : 'bg-black/5', message.replyTo?.deleted ? 'cursor-default' : 'cursor-pointer']"
+          @click.stop="!message.replyTo?.deleted && emit('scrollToReply', message.replyTo.id)"
         >
           <div class="w-0.5 shrink-0 self-stretch rounded-full"
             :class="props.isOwn ? 'bg-white/70' : 'bg-color-bg-ac'" />
           <div class="min-w-0 flex-1">
             <div class="truncate text-[11px] font-medium"
               :class="props.isOwn ? 'text-white/70' : 'text-color-bg-ac'">
-              {{ message.replyTo.senderId ? chatStore.getDisplayName(message.replyTo.senderId) : 'Deleted message' }}
+              {{ replyPreviewSender }}
             </div>
             <div class="truncate text-[11px] opacity-70">{{ replyPreviewText }}</div>
           </div>
@@ -677,7 +714,7 @@ const replyPreviewText = computed(() => {
         </div>
 
         <!-- Reactions row -->
-        <ReactionRow v-if="message.reactions && Object.keys(message.reactions).length" :reactions="message.reactions" :is-own="props.isOwn" @toggle="handleToggleReaction" @add-reaction="handleAddReaction" />
+        <ReactionRow v-if="message.reactions && Object.keys(message.reactions).length" :reactions="message.reactions" :is-own="props.isOwn" :my-address="props.myAddress" :message-id="message.id" @toggle="handleToggleReaction" @add-reaction="handleAddReaction" />
       </div>
     </div>
   </div>

@@ -25,13 +25,18 @@ export class MessageRepository {
       .limit(limit)
       .toArray();
 
-    // Exclude soft-deleted messages, return in chronological order
-    return msgs.filter((m) => !m.softDeleted).reverse();
+    return msgs.reverse();
   }
 
   /** Get a single message by server eventId */
   async getByEventId(eventId: string): Promise<LocalMessage | undefined> {
     return this.db.messages.where("eventId").equals(eventId).first();
+  }
+
+  /** Get multiple messages by server eventIds (single query) */
+  async getByEventIds(eventIds: string[]): Promise<LocalMessage[]> {
+    if (eventIds.length === 0) return [];
+    return this.db.messages.where("eventId").anyOf(eventIds).toArray();
   }
 
   /** Get a single message by clientId */
@@ -50,6 +55,18 @@ export class MessageRepository {
       ])
       .toArray();
     return pending.sort((a, b) => a.timestamp - b.timestamp);
+  }
+
+  /** Get the last non-deleted message in a room (for preview after deletion) */
+  async getLastNonDeleted(roomId: string): Promise<LocalMessage | undefined> {
+    const msgs = await this.db.messages
+      .where("[roomId+timestamp]")
+      .between([roomId, Dexie.minKey], [roomId, Dexie.maxKey])
+      .reverse()
+      .filter((m) => !m.softDeleted && !m.deleted)
+      .limit(1)
+      .toArray();
+    return msgs[0];
   }
 
   // ---------------------------------------------------------------------------
@@ -123,37 +140,56 @@ export class MessageRepository {
 
   /** Bulk insert messages (e.g., initial room load / pagination) */
   async bulkInsert(messages: LocalMessage[]): Promise<void> {
-    // Filter out messages we already have by eventId
     const eventIds = messages
       .map((m) => m.eventId)
       .filter((id): id is string => id !== null);
 
-    const existing = eventIds.length > 0
-      ? await this.db.messages.where("eventId").anyOf(eventIds).primaryKeys()
-      : [];
-    const existingSet = new Set(existing);
-
-    const toInsert = messages.filter((m) => {
-      if (!m.eventId) return true;
-      // Check if any existing record has this eventId
-      return !existingSet.size; // Simplified: if no existing, insert all
-    });
-
-    // For proper dedup, fetch existing eventIds
+    // Collect existing eventIds
+    const existingEventIds = new Set<string>();
     if (eventIds.length > 0) {
       const existingEvents = await this.db.messages
         .where("eventId")
         .anyOf(eventIds)
         .toArray();
-      const existingEventIds = new Set(existingEvents.map((e) => e.eventId));
-      const filtered = messages.filter(
-        (m) => !m.eventId || !existingEventIds.has(m.eventId),
-      );
-      if (filtered.length > 0) {
-        await this.db.messages.bulkAdd(filtered);
+      for (const e of existingEvents) {
+        if (e.eventId) existingEventIds.add(e.eventId);
       }
-    } else {
-      await this.db.messages.bulkAdd(messages);
+    }
+
+    // Collect clientIds to check against pending messages
+    const clientIds = messages
+      .map((m) => m.clientId)
+      .filter((id): id is string => !!id);
+    const existingClientIds = new Set<string>();
+    if (clientIds.length > 0) {
+      const existingByClient = await this.db.messages
+        .where("clientId")
+        .anyOf(clientIds)
+        .toArray();
+      for (const e of existingByClient) {
+        if (e.clientId) existingClientIds.add(e.clientId);
+        // Also update pending messages with server eventId
+        if (e.status === "pending" || e.status === "syncing") {
+          const incoming = messages.find((m) => m.clientId === e.clientId);
+          if (incoming?.eventId && e.localId) {
+            await this.db.messages.update(e.localId, {
+              eventId: incoming.eventId,
+              status: "synced" as LocalMessageStatus,
+              serverTs: incoming.serverTs ?? incoming.timestamp,
+            });
+          }
+        }
+      }
+    }
+
+    const filtered = messages.filter(
+      (m) =>
+        (!m.eventId || !existingEventIds.has(m.eventId)) &&
+        (!m.clientId || !existingClientIds.has(m.clientId)),
+    );
+
+    if (filtered.length > 0) {
+      await this.db.messages.bulkAdd(filtered);
     }
   }
 
@@ -181,6 +217,21 @@ export class MessageRepository {
       .modify({
         softDeleted: true,
         deletedAt: Date.now(),
+      });
+  }
+
+  /** Mark replyTo.deleted on all messages referencing a given eventId */
+  async markReplyDeleted(deletedEventId: string): Promise<void> {
+    // No index on nested replyTo.id — full table filter is unavoidable without schema migration.
+    // Uses modify() to avoid read-modify-write race with concurrent reaction/edit updates.
+    await this.db.messages
+      .filter((m) => m.replyTo?.id === deletedEventId)
+      .modify((m: LocalMessage) => {
+        if (m.replyTo) {
+          m.replyTo.deleted = true;
+          m.replyTo.senderId = "";
+          m.replyTo.content = "";
+        }
       });
   }
 
@@ -237,5 +288,111 @@ export class MessageRepository {
       .where("[roomId+timestamp]")
       .between([roomId, Dexie.minKey], [roomId, Dexie.maxKey])
       .count();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Unread UX helpers
+  // ---------------------------------------------------------------------------
+
+  /** Load messages around a timestamp for jump-to-unread.
+   *  Returns `beforeCount` messages before ts + messages after ts up to `afterCount`. */
+  async getMessagesAroundTimestamp(
+    roomId: string,
+    timestamp: number,
+    beforeCount = 15,
+    afterCount = 35,
+  ): Promise<{ messages: LocalMessage[]; anchorIndex: number }> {
+    const [before, after] = await Promise.all([
+      this.db.messages
+        .where("[roomId+timestamp]")
+        .between([roomId, Dexie.minKey], [roomId, timestamp], true, true)
+        .reverse()
+        .limit(beforeCount)
+        .toArray(),
+      this.db.messages
+        .where("[roomId+timestamp]")
+        .between([roomId, timestamp], [roomId, Dexie.maxKey], false, true)
+        .limit(afterCount)
+        .toArray(),
+    ]);
+
+    const messages = [...before.reverse(), ...after];
+    const anchorIndex = before.length;
+    return { messages, anchorIndex };
+  }
+
+  /** Count inbound messages after a timestamp (for unread count on banner). */
+  async countInboundAfter(
+    roomId: string,
+    afterTimestamp: number,
+    excludeSenderId: string,
+  ): Promise<number> {
+    return this.db.messages
+      .where("[roomId+timestamp]")
+      .between([roomId, afterTimestamp], [roomId, Dexie.maxKey], false, true)
+      .filter(m => m.senderId !== excludeSenderId && !m.softDeleted)
+      .count();
+  }
+
+  /** Get the last message at or before a timestamp. */
+  async getLastMessageAtOrBefore(
+    roomId: string,
+    timestamp: number,
+  ): Promise<LocalMessage | undefined> {
+    const msgs = await this.db.messages
+      .where("[roomId+timestamp]")
+      .between([roomId, Dexie.minKey], [roomId, timestamp], true, true)
+      .reverse()
+      .limit(1)
+      .toArray();
+    return msgs[0];
+  }
+
+  // ---------------------------------------------------------------------------
+  // Context & forward pagination (jump-to-message)
+  // ---------------------------------------------------------------------------
+
+  /** Find a message by eventId and return it with surrounding context.
+   *  Returns `contextSize` messages before and after the target. */
+  async getMessageContext(
+    roomId: string,
+    targetEventId: string,
+    contextSize = 25,
+  ): Promise<{ messages: LocalMessage[]; targetIndex: number } | null> {
+    const target = await this.getByEventId(targetEventId);
+    if (!target || target.roomId !== roomId) return null;
+
+    const [before, after] = await Promise.all([
+      this.db.messages
+        .where("[roomId+timestamp]")
+        .between([roomId, Dexie.minKey], [roomId, target.timestamp], true, false)
+        .reverse()
+        .limit(contextSize)
+        .toArray(),
+      this.db.messages
+        .where("[roomId+timestamp]")
+        .between([roomId, target.timestamp], [roomId, Dexie.maxKey], false, true)
+        .limit(contextSize)
+        .toArray(),
+    ]);
+
+    const all = [...before.reverse(), target, ...after];
+    const targetIndex = all.findIndex(m => m.eventId === targetEventId);
+
+    return { messages: all, targetIndex };
+  }
+
+  /** Load messages after a given timestamp (forward pagination for detached mode). */
+  async getMessagesAfter(
+    roomId: string,
+    afterTimestamp: number,
+    limit = 50,
+  ): Promise<LocalMessage[]> {
+    const msgs = await this.db.messages
+      .where("[roomId+timestamp]")
+      .between([roomId, afterTimestamp], [roomId, Dexie.maxKey], false, true)
+      .limit(limit)
+      .toArray();
+    return msgs;
   }
 }

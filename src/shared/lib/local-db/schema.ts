@@ -5,6 +5,7 @@ import type {
   ReplyTo,
   PollInfo,
   TransferInfo,
+  LinkPreview,
 } from "@/entities/chat/model/types";
 
 // ---------------------------------------------------------------------------
@@ -32,8 +33,7 @@ export type OperationType =
   | "remove_reaction"
   | "send_poll"
   | "vote_poll"
-  | "send_transfer"
-  | "send_read_receipt";
+  | "send_transfer";
 
 // ---------------------------------------------------------------------------
 // Table interfaces
@@ -48,6 +48,10 @@ export interface LocalRoom {
   members: string[];             // hex-encoded Bastyon addresses
   membership: "join" | "invite" | "leave";
   unreadCount: number;
+  /** Watermark: timestamp of last inbound message WE have read (0 = unread) */
+  lastReadInboundTs: number;
+  /** Watermark: timestamp of our last outbound message the OTHER party has read (0 = unread) */
+  lastReadOutboundTs: number;
   topic?: string;
   updatedAt: number;             // timestamp of last activity
 
@@ -56,6 +60,14 @@ export interface LocalRoom {
   lastMessageTimestamp?: number;
   lastMessageSenderId?: string;
   lastMessageType?: MessageType;
+  lastMessageEventId?: string;   // eventId of last message (for reaction cascade)
+  lastMessageReaction?: {        // last reaction on the last message
+    emoji: string;
+    senderAddress: string;
+    timestamp: number;
+  } | null;
+  /** Transport status of last message (pending/syncing/synced/failed — NOT read/delivered) */
+  lastMessageLocalStatus?: LocalMessageStatus;
 
   // Sync metadata
   syncedAt: number;              // last sync from server
@@ -85,9 +97,18 @@ export interface LocalMessage {
   callInfo?: { callType: "voice" | "video"; missed: boolean; duration?: number };
   pollInfo?: PollInfo;
   transferInfo?: TransferInfo;
+  linkPreview?: LinkPreview;
+  deleted?: boolean;
+  systemMeta?: {
+    template: string;
+    senderAddr: string;
+    targetAddr?: string;
+  };
 
-  // Sync metadata
-  encryptedBody?: string;        // Raw encrypted body for retry/re-send
+  // Sync & decryption metadata
+  encryptedBody?: string;        // Raw encrypted event JSON for decryption retry
+  decryptionStatus?: "ok" | "pending" | "failed"; // Decryption outcome
+  decryptionAttempts?: number;   // Number of decrypt attempts
   serverTs?: number;             // Original server timestamp
   version: number;               // Incremented on each local edit
   softDeleted: boolean;          // true = marked for deletion, pending sync
@@ -139,6 +160,19 @@ export interface LocalAttachment {
   uploadProgress?: number;       // 0-100
 }
 
+/** Queued decryption retry job */
+export interface DecryptionJob {
+  id?: number;                   // Auto PK
+  eventId: string;               // Matrix event ID → LocalMessage.eventId
+  roomId: string;
+  encryptedBody: string;         // JSON-serialized raw Matrix event content
+  status: "pending" | "processing" | "failed" | "dead";
+  attempts: number;
+  nextAttemptAt: number;         // Timestamp for backoff scheduling
+  lastError?: string;
+  createdAt: number;
+}
+
 // ---------------------------------------------------------------------------
 // Database
 // ---------------------------------------------------------------------------
@@ -151,6 +185,7 @@ export class ChatDatabase extends Dexie {
   pendingOps!: Table<PendingOperation>;
   syncState!: Table<SyncStateEntry>;
   attachments!: Table<LocalAttachment>;
+  decryptionQueue!: Table<DecryptionJob>;
 
   constructor(userId: string) {
     super(`bastyon-chat-${userId}`);
@@ -180,6 +215,188 @@ export class ChatDatabase extends Dexie {
 
       // PK: auto-incremented. Index: messageLocalId (FK lookup)
       attachments: "++id, messageLocalId, status",
+    });
+
+    // Version 2: add decryption retry queue
+    this.version(2).stores({
+      // Existing tables — repeat schema (Dexie requires all stores in each version)
+      rooms: "id, updatedAt, membership",
+      messages: "++localId, eventId, clientId, [roomId+timestamp], [roomId+status], senderId",
+      users: "address, updatedAt",
+      pendingOps: "++id, [roomId+createdAt], status",
+      syncState: "key",
+      attachments: "++id, messageLocalId, status",
+      // New table: decryption retry queue
+      decryptionQueue: "++id, eventId, roomId, status, [status+nextAttemptAt]",
+    });
+
+    // Version 3: deduplicate messages created by clientId/txnId mismatch
+    this.version(3).stores({
+      rooms: "id, updatedAt, membership",
+      messages: "++localId, eventId, clientId, [roomId+timestamp], [roomId+status], senderId",
+      users: "address, updatedAt",
+      pendingOps: "++id, [roomId+createdAt], status",
+      syncState: "key",
+      attachments: "++id, messageLocalId, status",
+      decryptionQueue: "++id, eventId, roomId, status, [status+nextAttemptAt]",
+    }).upgrade(async (tx) => {
+      const messages = tx.table("messages");
+      const allMsgs = await messages.toArray();
+
+      // Group by eventId to find duplicates
+      const byEventId = new Map<string, Array<{ localId: number; status: string }>>();
+      for (const msg of allMsgs) {
+        if (!msg.eventId) continue;
+        const group = byEventId.get(msg.eventId);
+        if (group) group.push({ localId: msg.localId, status: msg.status });
+        else byEventId.set(msg.eventId, [{ localId: msg.localId, status: msg.status }]);
+      }
+
+      const toDelete: number[] = [];
+      for (const [, group] of byEventId) {
+        if (group.length <= 1) continue;
+        // Keep the synced one, or first if none synced
+        const keeper = group.find((m) => m.status === "synced") ?? group[0];
+        for (const msg of group) {
+          if (msg.localId !== keeper.localId) {
+            toDelete.push(msg.localId);
+          }
+        }
+      }
+
+      // Remove orphaned pending messages older than 24h with no eventId
+      const dayAgo = Date.now() - 86_400_000;
+      for (const msg of allMsgs) {
+        if (!msg.eventId && msg.status === "pending" && msg.timestamp < dayAgo) {
+          toDelete.push(msg.localId);
+        }
+      }
+
+      if (toDelete.length > 0) {
+        await messages.bulkDelete(toDelete);
+        console.log(`[ChatDB] Dedup migration: removed ${toDelete.length} duplicate/orphaned messages`);
+      }
+    });
+
+    // Version 4: add read watermarks to rooms, backfill from message statuses
+    this.version(4).stores({
+      rooms: "id, updatedAt, membership",
+      messages: "++localId, eventId, clientId, [roomId+timestamp], [roomId+status], senderId",
+      users: "address, updatedAt",
+      pendingOps: "++id, [roomId+createdAt], status",
+      syncState: "key",
+      attachments: "++id, messageLocalId, status",
+      decryptionQueue: "++id, eventId, roomId, status, [status+nextAttemptAt]",
+    }).upgrade(async (tx) => {
+      const rooms = tx.table("rooms");
+      const messages = tx.table("messages");
+
+      const allRooms = await rooms.toArray();
+      for (const room of allRooms) {
+        // Backfill outbound watermark: find the latest "read" message we sent
+        const readMsgs = await messages
+          .where("[roomId+status]")
+          .equals([room.id, "read"])
+          .toArray();
+        const latestRead = readMsgs.reduce(
+          (max: number, m: any) => (m.timestamp > max ? m.timestamp : max),
+          0,
+        );
+
+        await rooms.update(room.id, {
+          lastReadInboundTs: 0,
+          lastReadOutboundTs: latestRead,
+        });
+      }
+
+      console.log(`[ChatDB] Watermark migration: backfilled ${allRooms.length} rooms`);
+    });
+
+    // Version 5: heal broken cross-device messages
+    // Messages sent from another device of the same user were stored with
+    // content="" and decryptionStatus="ok" due to a bug in own-echo suppression.
+    // This migration marks them for re-decryption and fixes stale room previews.
+    this.version(5).stores({
+      rooms: "id, updatedAt, membership",
+      messages: "++localId, eventId, clientId, [roomId+timestamp], [roomId+status], senderId",
+      users: "address, updatedAt",
+      pendingOps: "++id, [roomId+createdAt], status",
+      syncState: "key",
+      attachments: "++id, messageLocalId, status",
+      decryptionQueue: "++id, eventId, roomId, status, [status+nextAttemptAt]",
+    }).upgrade(async (tx) => {
+      const messages = tx.table("messages");
+      const rooms = tx.table("rooms");
+      const decryptionQueue = tx.table("decryptionQueue");
+
+      // Find messages with empty content that are "ok" (the broken cross-device ones)
+      // These have: content="" OR content very short, decryptionStatus="ok",
+      // status="synced", eventId starts with "$", no encryptedBody
+      const allMsgs = await messages
+        .filter((m: any) =>
+          m.content === "" &&
+          m.decryptionStatus === "ok" &&
+          m.status === "synced" &&
+          m.eventId &&
+          m.eventId.startsWith("$") &&
+          !m.softDeleted &&
+          !m.encryptedBody &&
+          !m.deleted &&  // Not edited-to-empty (redacted messages have deleted=true)
+          m.type === "text"  // Only text messages — media/file always have content
+        )
+        .toArray();
+
+      if (allMsgs.length > 0) {
+        // Mark these messages for re-decryption by setting decryptionStatus to "pending"
+        // The DecryptionWorker can't process them without encryptedBody,
+        // but setting status="pending" + content="[encrypted]" signals the UI
+        // that these need re-fetching. We also set a flag so the app knows to
+        // re-fetch the raw event from the server.
+        for (const msg of allMsgs) {
+          await messages.update(msg.localId, {
+            content: "[encrypted]",
+            decryptionStatus: "pending",
+          });
+        }
+        console.log(`[ChatDB] Cross-device heal: marked ${allMsgs.length} empty messages for re-decryption`);
+      }
+
+      // Fix stale room previews showing "" or "[encrypted]"
+      const allRooms = await rooms.toArray();
+      const affectedRoomIds = new Set<string>();
+      for (const room of allRooms) {
+        if (room.lastMessagePreview === "" ||
+            room.lastMessagePreview === "[encrypted]") {
+          // Find the latest non-deleted message with actual content
+          const roomMsgs = await messages
+            .where("[roomId+timestamp]")
+            .between([room.id, 0], [room.id, Infinity])
+            .reverse()
+            .filter((m: any) => !m.softDeleted && m.content !== "" && m.content !== "[encrypted]")
+            .limit(1)
+            .toArray();
+
+          if (roomMsgs.length > 0) {
+            const latest = roomMsgs[0];
+            let preview = latest.content;
+            if (latest.type === "image") preview = "[photo]";
+            else if (latest.type === "video") preview = "[video]";
+            else if (latest.type === "audio") preview = "[voice message]";
+            else if (latest.type === "file") preview = "[file]";
+            else if (latest.type === "poll") preview = "[poll]";
+
+            await rooms.update(room.id, {
+              lastMessagePreview: preview.slice(0, 200),
+              lastMessageTimestamp: latest.timestamp,
+              lastMessageSenderId: latest.senderId,
+            });
+            affectedRoomIds.add(room.id);
+          }
+        }
+      }
+      if (affectedRoomIds.size > 0) {
+        console.log(`[ChatDB] Cross-device heal: fixed previews for ${affectedRoomIds.size} rooms`);
+      }
     });
   }
 }

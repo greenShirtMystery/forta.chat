@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed, watch, reactive } from "vue";
 import { useThemeStore } from "@/entities/theme";
 
 interface ReactionData {
@@ -10,6 +11,8 @@ interface ReactionData {
 interface Props {
   reactions: Record<string, ReactionData>;
   isOwn: boolean;
+  myAddress?: string;
+  messageId?: string;
 }
 
 const props = defineProps<Props>();
@@ -20,9 +23,35 @@ const emit = defineEmits<{
 
 const themeStore = useThemeStore();
 
-const hasMyReaction = computed(() => {
-  return Object.values(props.reactions).some(r => !!r.myEventId);
+// Module-level map: survives DynamicScroller component recycling
+const pendingMap = reactive(new Map<string, number>());
+
+const dataHasMyReaction = computed(() => {
+  return Object.values(props.reactions).some(r =>
+    !!r.myEventId || (props.myAddress ? r.users.includes(props.myAddress) : false),
+  );
 });
+
+// Clear pending when real data arrives or after timeout
+watch(dataHasMyReaction, (val) => {
+  if (val && props.messageId) {
+    pendingMap.delete(props.messageId);
+  }
+});
+
+const hasMyReaction = computed(() => {
+  if (props.messageId && pendingMap.has(props.messageId)) return true;
+  return dataHasMyReaction.value;
+});
+
+const onToggle = (emoji: string) => {
+  if (!dataHasMyReaction.value && props.messageId) {
+    pendingMap.set(props.messageId, Date.now());
+    // Safety cleanup after 5s in case data never arrives
+    setTimeout(() => pendingMap.delete(props.messageId!), 5000);
+  }
+  emit("toggle", emoji);
+};
 
 const MAX_VISIBLE = 5;
 
@@ -54,9 +83,9 @@ const chipClass = (isMine: boolean) => {
       v-for="[emoji, data] in visibleReactions"
       :key="emoji"
       type="button"
-      class="reaction-chip inline-flex cursor-pointer items-center gap-0.5 rounded-full px-1.5 py-0.5 text-xs transition-colors"
-      :class="[chipClass(!!data.myEventId), themeStore.animationsEnabled ? 'animate-reaction' : '']"
-      @click.stop="emit('toggle', emoji)"
+      class="reaction-chip inline-flex cursor-pointer items-center gap-0.5 rounded-full px-2 py-1 text-xs transition-colors"
+      :class="[chipClass(!!data.myEventId || (myAddress ? data.users.includes(myAddress) : false)), themeStore.animationsEnabled ? 'animate-reaction' : '']"
+      @click.stop="onToggle(emoji)"
     >
       <span>{{ emoji }}</span>
       <span v-if="data.count > 0" class="tabular-nums">{{ data.count }}</span>
@@ -75,7 +104,7 @@ const chipClass = (isMine: boolean) => {
     <button
       v-if="!hasMyReaction"
       type="button"
-      class="inline-flex h-[22px] w-[22px] items-center justify-center rounded-full text-xs transition-colors"
+      class="inline-flex h-6 w-6 items-center justify-center rounded-full text-xs transition-colors"
       :class="isOwn ? 'text-white/50 hover:bg-white/10 hover:text-white/80' : 'text-text-on-main-bg-color hover:bg-neutral-grad-0'"
       @click.stop="emit('addReaction')"
     >

@@ -65,19 +65,60 @@ export class RoomRepository {
     timestamp: number,
     senderId: string,
     type?: MessageType,
+    eventId?: string,
   ): Promise<void> {
-    await this.db.rooms.update(roomId, {
+    const changes: Partial<import("./schema").LocalRoom> = {
       lastMessagePreview: preview.slice(0, 200),
       lastMessageTimestamp: timestamp,
       lastMessageSenderId: senderId,
       lastMessageType: type,
       updatedAt: timestamp,
-    });
+      // New last message = clear old reaction (no double DB write)
+      lastMessageReaction: null,
+    };
+    if (eventId !== undefined) {
+      changes.lastMessageEventId = eventId;
+    }
+    const updated = await this.db.rooms.update(roomId, changes);
+    if (updated === 0) {
+      const existing = await this.db.rooms.get(roomId);
+      if (existing) {
+        await this.db.rooms.update(roomId, changes);
+      }
+    }
+  }
+
+  /** Update reaction on the last message (does NOT touch updatedAt) */
+  async updateLastMessageReaction(
+    roomId: string,
+    reaction: import("./schema").LocalRoom["lastMessageReaction"],
+  ): Promise<void> {
+    await this.db.rooms.update(roomId, { lastMessageReaction: reaction });
   }
 
   /** Set unread count */
   async setUnreadCount(roomId: string, count: number): Promise<void> {
     await this.db.rooms.update(roomId, { unreadCount: count });
+  }
+
+  /** Update outbound read watermark (other party read our messages up to this timestamp) */
+  async updateOutboundWatermark(roomId: string, timestamp: number): Promise<void> {
+    const room = await this.getRoom(roomId);
+    if (!room) return;
+    // Watermark only moves forward (monotonic)
+    if (timestamp <= (room.lastReadOutboundTs ?? 0)) return;
+    await this.db.rooms.update(roomId, { lastReadOutboundTs: timestamp });
+  }
+
+  /** Update inbound read watermark + clear unread (we read messages up to this timestamp) */
+  async markAsRead(roomId: string, timestamp: number): Promise<void> {
+    const room = await this.getRoom(roomId);
+    if (!room) return;
+    if (timestamp <= (room.lastReadInboundTs ?? 0)) return;
+    await this.db.rooms.update(roomId, {
+      lastReadInboundTs: timestamp,
+      unreadCount: 0,
+    });
   }
 
   /** Update pagination token for a room */

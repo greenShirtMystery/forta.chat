@@ -3,13 +3,16 @@ import type { MatrixKit } from "@/entities/matrix";
 import type { Pcrypto, PcryptoRoomInstance } from "@/entities/matrix/model/matrix-crypto";
 import { getmatrixid, hexEncode, hexDecode } from "@/shared/lib/matrix/functions";
 import { matrixIdToAddress, messageTypeFromMime, parseFileInfo, cleanMatrixIds, looksLikeProperName } from "../lib/chat-helpers";
+import { resetPowerLevel, isUserBanned } from "../lib/room-guards";
 import { stripMentionAddresses, stripBastyonLinks } from "@/shared/lib/message-format";
-import { cacheRooms, getCachedRooms, cacheMessages, getCachedMessages, getCacheTimestamp } from "@/shared/lib/cache/chat-cache";
+import { getCachedRooms, getCachedMessages, getCacheTimestamp } from "@/shared/lib/cache/chat-cache";
 import { useAuthStore } from "@/entities/auth/model/stores";
 import { useUserStore } from "@/entities/user/model";
 import { defineStore } from "pinia";
 import { computed, ref, shallowRef, triggerRef } from "vue";
 
+import type { ChatDbKit, ParsedMessage, LocalRoom } from "@/shared/lib/local-db";
+import { useLiveQuery, localToMessages, localStatusToMessageStatus, deriveOutboundStatus } from "@/shared/lib/local-db";
 import type { ChatRoom, FileInfo, LinkPreview, Message, PollInfo, ReplyTo, TransferInfo } from "./types";
 import { MessageStatus, MessageType } from "./types";
 
@@ -235,9 +238,12 @@ export const useChatStore = defineStore(NAMESPACE, () => {
   const rooms = shallowRef<ChatRoom[]>([]);
   const roomsMap = new Map<string, ChatRoom>(); // O(1) lookup index
   const activeRoomId = ref<string | null>(null);
+  // Message window size for pagination (increases on scroll-up, resets on room switch)
+  const messageWindowSize = ref(50);
   const messages = shallowRef<Record<string, Message[]>>({});
   const typing = ref<Record<string, string[]>>({});
   const replyingTo = ref<ReplyTo | null>(null);
+  const isDetachedFromLatest = ref(false);
 
   /** True after the first refreshRoomsImmediate completes (rooms list is authoritative) */
   const roomsInitialized = ref(false);
@@ -280,18 +286,8 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     }
   };
 
-  // Debounced room caching — max once per 5 seconds
-  let cacheTimer: ReturnType<typeof setTimeout> | null = null;
-  const debouncedCacheRooms = () => {
-    if (cacheTimer) clearTimeout(cacheTimer);
-    cacheTimer = setTimeout(() => {
-      // Never cache empty rooms — protects against premature calls before sync completes
-      if (rooms.value.length > 0) {
-        cacheRooms(rooms.value).catch(() => {});
-      }
-      cacheTimer = null;
-    }, 5000);
-  };
+  // Debounced room caching — no-op: Dexie is now the persistent store
+  const debouncedCacheRooms = () => {};
 
   // Track rooms that failed decryption — retry with backoff instead of permanent block
   const decryptFailedRooms = new Map<string, { count: number; lastAttempt: number }>();
@@ -471,11 +467,67 @@ export const useChatStore = defineStore(NAMESPACE, () => {
   const markRoomAsRead = (roomId: string) => {
     const room = getRoomById(roomId);
     if (room) room.unreadCount = 0;
+
+    // Persist to Dexie + advance inbound watermark
+    if (chatDbKitRef.value) {
+      const roomMsgs = messages.value[roomId];
+      const myAddr = useAuthStore().address;
+      const lastInboundTs = roomMsgs
+        ?.filter(m => m.senderId !== myAddr)
+        .reduce((max, m) => (m.timestamp > max ? m.timestamp : max), 0) ?? 0;
+
+      if (lastInboundTs > 0) {
+        chatDbKitRef.value.rooms.markAsRead(roomId, lastInboundTs).catch(() => {});
+      } else {
+        chatDbKitRef.value.eventWriter.clearUnread(roomId).catch(() => {});
+      }
+    }
   };
 
   // References to matrix helpers (set by auth store after init)
   const matrixKitRef = shallowRef<MatrixKit | null>(null);
   const pcryptoRef = shallowRef<Pcrypto | null>(null);
+  const chatDbKitRef = shallowRef<ChatDbKit | null>(null);
+
+  const setChatDbKit = (kit: ChatDbKit) => {
+    chatDbKitRef.value = kit;
+  };
+
+  /** Get the Dexie kit (throws if not initialized) */
+  const getDbKit = (): ChatDbKit => {
+    if (!chatDbKitRef.value) throw new Error("[chat-store] ChatDbKit not initialized");
+    return chatDbKitRef.value;
+  };
+
+  // Primary message source: Dexie liveQuery (auto-subscribes to DB changes)
+  const { data: dexieMessages, isReady: dexieMessagesReady } = useLiveQuery(
+    () => {
+      if (!activeRoomId.value || !chatDbKitRef.value) return [] as import("@/shared/lib/local-db").LocalMessage[];
+      return chatDbKitRef.value.messages.getMessages(
+        activeRoomId.value,
+        messageWindowSize.value,
+      );
+    },
+    () => [activeRoomId.value, messageWindowSize.value, chatDbKitRef.value] as const,
+    [] as import("@/shared/lib/local-db").LocalMessage[],
+  );
+
+  // Dexie-backed room list (auto-updates on any room table write)
+  const { data: dexieRooms, isReady: dexieRoomsReady } = useLiveQuery(
+    () => {
+      if (!chatDbKitRef.value) return [] as import("@/shared/lib/local-db").LocalRoom[];
+      return chatDbKitRef.value.rooms.getAllRooms();
+    },
+    () => chatDbKitRef.value,
+    [] as import("@/shared/lib/local-db").LocalRoom[],
+  );
+
+  // Outbound watermark for active room — used to derive message statuses
+  const activeRoomOutboundWatermark = computed(() => {
+    if (!activeRoomId.value) return 0;
+    const lr = dexieRooms.value.find(r => r.id === activeRoomId.value);
+    return lr?.lastReadOutboundTs ?? 0;
+  });
 
   const activeRoom = computed(() => {
     // Access rooms.value to register Vue reactive dependency
@@ -483,35 +535,90 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     return activeRoomId.value ? getRoomById(activeRoomId.value) : undefined;
   });
 
-  // Return the array directly (no spread) to preserve object identity between
-  // triggerRef calls. DynamicScroller uses key-field="id" for diffing, so it
-  // handles in-place mutations correctly. Spreading created a new array reference
-  // on every triggerRef(messages) — even for unrelated rooms — causing unnecessary
-  // full re-renders and flickering during cache→server sync.
-  const activeMessages = computed(() =>
-    activeRoomId.value ? (messages.value[activeRoomId.value] ?? []) : []
-  );
+  // Convert Dexie LocalMessage[] → Message[] for UI, fallback to old shallowRef during migration
+  const activeMessages = computed<Message[]>(() => {
+    let msgs: Message[];
+    if (chatDbKitRef.value) {
+      // Single source of truth: always use Dexie when initialized
+      // (returns [] while liveQuery hasn't responded — UI uses dexieMessagesReady to show skeleton)
+      const myAddr = useAuthStore().address ?? undefined;
+      msgs = localToMessages(dexieMessages.value, activeRoomOutboundWatermark.value, myAddr);
+    } else {
+      // Fallback: use old in-memory store only when Dexie not yet initialized
+      msgs = activeRoomId.value ? (messages.value[activeRoomId.value] ?? []) : [];
+    }
+
+    // Deduplicate: a pending message (clientId) and its server echo (eventId)
+    // can coexist briefly. Keep the one with a server eventId when both exist.
+    if (msgs.length > 0) {
+      const seen = new Set<string>();
+      const deduped: Message[] = [];
+      for (const m of msgs) {
+        if (seen.has(m.id)) continue;
+        seen.add(m.id);
+        deduped.push(m);
+      }
+      if (deduped.length !== msgs.length) msgs = deduped;
+    }
+
+    return msgs;
+  });
 
   const activeMediaMessages = computed(() =>
     activeMessages.value.filter(m => m.type === MessageType.image || m.type === MessageType.video)
   );
 
-  const sortedRooms = computed(() =>
-    [...rooms.value]
+  const sortedRooms = computed(() => {
+    // Use Dexie rooms when initialized (single source of truth), fallback to old shallowRef otherwise
+    let source: ChatRoom[];
+    if (chatDbKitRef.value) {
+      source = dexieRooms.value.map(lr => ({
+        id: lr.id,
+        name: lr.name,
+        avatar: lr.avatar,
+        isGroup: lr.isGroup,
+        members: lr.members,
+        membership: lr.membership as "join" | "invite",
+        unreadCount: lr.unreadCount,
+        topic: lr.topic,
+        updatedAt: lr.updatedAt,
+        lastMessage: lr.lastMessagePreview != null ? {
+          id: "",
+          roomId: lr.id,
+          senderId: lr.lastMessageSenderId ?? "",
+          content: lr.lastMessagePreview,
+          timestamp: lr.lastMessageTimestamp ?? lr.updatedAt,
+          status: deriveOutboundStatus(
+              lr.lastMessageLocalStatus ?? "synced",
+              lr.lastMessageTimestamp ?? 0,
+              lr.lastReadOutboundTs ?? 0,
+            ),
+          type: lr.lastMessageType ?? MessageType.text,
+        } as Message : undefined,
+        lastMessageReaction: lr.lastMessageReaction ?? undefined,
+      } as ChatRoom));
+    } else {
+      source = rooms.value;
+    }
+
+    return [...source]
       .filter(r => !deletedRoomIds.value.has(r.id))
       .sort((a, b) => {
-        // Pinned rooms first
         const aPinned = pinnedRoomIds.value.has(a.id) ? 1 : 0;
         const bPinned = pinnedRoomIds.value.has(b.id) ? 1 : 0;
         if (aPinned !== bPinned) return bPinned - aPinned;
-        // Chronological — most recent activity first (matches original bastyon-chat)
         return b.updatedAt - a.updatedAt;
-      })
-  );
+      });
+  });
 
-  const totalUnread = computed(() =>
-    rooms.value.reduce((sum, r) => sum + r.unreadCount, 0)
-  );
+  const totalUnread = computed(() => {
+    if (chatDbKitRef.value) {
+      return dexieRooms.value
+        .filter(r => !deletedRoomIds.value.has(r.id))
+        .reduce((sum, r) => sum + r.unreadCount, 0);
+    }
+    return rooms.value.reduce((sum, r) => sum + r.unreadCount, 0);
+  });
 
   /** Set helper references from auth store */
   const setHelpers = (kit: MatrixKit, crypto: Pcrypto) => {
@@ -643,6 +750,55 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     rooms.value = newRooms;
     rebuildRoomsMap();
 
+    // Dual-write: persist rooms to Dexie
+    if (chatDbKitRef.value) {
+      const dbKit = chatDbKitRef.value;
+      const localRooms: LocalRoom[] = newRooms.map(r => ({
+        id: r.id,
+        name: r.name,
+        avatar: r.avatar,
+        isGroup: r.isGroup,
+        members: r.members,
+        membership: (r.membership ?? "join") as "join" | "invite" | "leave",
+        unreadCount: r.unreadCount,
+        topic: r.topic || "",
+        updatedAt: r.updatedAt,
+        syncedAt: Date.now(),
+        hasMoreHistory: true,
+        lastReadInboundTs: 0,
+        lastReadOutboundTs: 0,
+        lastMessagePreview: r.lastMessage?.deleted
+          ? "🚫 Message deleted"
+          : r.lastMessage?.content?.slice(0, 200),
+        lastMessageTimestamp: r.lastMessage?.timestamp,
+        lastMessageSenderId: r.lastMessage?.senderId,
+        lastMessageType: r.lastMessage?.type,
+        lastMessageEventId: r.lastMessage?.id || undefined,
+        lastMessageLocalStatus: r.lastMessage?.status === MessageStatus.sending ? "pending"
+          : r.lastMessage?.status === MessageStatus.failed ? "failed"
+          : "synced" as import("@/shared/lib/local-db").LocalMessageStatus,
+      }));
+
+      // Preserve existing watermarks (bulkPut overwrites entire rows)
+      (async () => {
+        try {
+          const existingRooms = await dbKit.rooms.getAllRooms();
+          const existingMap = new Map(existingRooms.map(r => [r.id, r]));
+          for (const lr of localRooms) {
+            const existing = existingMap.get(lr.id);
+            if (existing) {
+              lr.lastReadInboundTs = existing.lastReadInboundTs ?? 0;
+              lr.lastReadOutboundTs = existing.lastReadOutboundTs ?? 0;
+              lr.unreadCount = existing.unreadCount;
+            }
+          }
+          await dbKit.rooms.bulkUpsertRooms(localRooms);
+        } catch (e) {
+          console.warn("[chat-store] Dexie room sync failed:", e);
+        }
+      })();
+    }
+
     // Build user display name cache from room members (sync — no API calls)
     // Only run loadMissingMembers once AND only when we have actual rooms
     const willLoadMembers = !membersLoadedOnce && interactiveRooms.length > 0;
@@ -651,6 +807,19 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     // Eagerly load profiles for the first viewport of rooms (top ~15)
     const viewportIds = sortedRooms.value.slice(0, 15).map(r => r.id);
     if (viewportIds.length > 0) loadProfilesForRoomIds(viewportIds);
+
+    // Background: load profiles for remaining rooms in batches (after viewport)
+    const remainingIds = sortedRooms.value.slice(15).map(r => r.id);
+    if (remainingIds.length > 0) {
+      const BG_BATCH = 10;
+      const BG_DELAY = 500;
+      (async () => {
+        for (let i = 0; i < remainingIds.length; i += BG_BATCH) {
+          await new Promise(r => setTimeout(r, BG_DELAY));
+          loadProfilesForRoomIds(remainingIds.slice(i, i + BG_BATCH));
+        }
+      })();
+    }
 
     // One-time: load members for rooms with stale lazy-load cache (only 1 member = self)
     if (willLoadMembers) {
@@ -813,6 +982,61 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       triggerRef(rooms);
     }
 
+    // Dual-write: persist changed rooms to Dexie
+    if (chatDbKitRef.value && changed.size > 0) {
+      const dbKit = chatDbKitRef.value;
+      const changedLocalRooms: LocalRoom[] = [];
+      for (const roomId of changed) {
+        const r = roomsMap.get(roomId);
+        if (!r) continue;
+        changedLocalRooms.push({
+          id: r.id,
+          name: r.name,
+          avatar: r.avatar,
+          isGroup: r.isGroup,
+          members: r.members,
+          membership: (r.membership ?? "join") as "join" | "invite" | "leave",
+          unreadCount: r.unreadCount,
+          topic: r.topic || "",
+          updatedAt: r.updatedAt,
+          syncedAt: Date.now(),
+          hasMoreHistory: true,
+          lastReadInboundTs: 0,
+          lastReadOutboundTs: 0,
+          lastMessagePreview: r.lastMessage?.deleted
+            ? "🚫 Message deleted"
+            : r.lastMessage?.content?.slice(0, 200),
+          lastMessageTimestamp: r.lastMessage?.timestamp,
+          lastMessageSenderId: r.lastMessage?.senderId,
+          lastMessageType: r.lastMessage?.type,
+          lastMessageEventId: r.lastMessage?.id || undefined,
+          lastMessageLocalStatus: r.lastMessage?.status === MessageStatus.sending ? "pending"
+            : r.lastMessage?.status === MessageStatus.failed ? "failed"
+            : "synced" as import("@/shared/lib/local-db").LocalMessageStatus,
+        });
+      }
+      if (changedLocalRooms.length > 0) {
+        // Preserve existing watermarks (bulkPut overwrites entire rows)
+        (async () => {
+          try {
+            const existingRooms = await dbKit.rooms.getAllRooms();
+            const existingMap = new Map(existingRooms.map(r => [r.id, r]));
+            for (const lr of changedLocalRooms) {
+              const existing = existingMap.get(lr.id);
+              if (existing) {
+                lr.lastReadInboundTs = existing.lastReadInboundTs ?? 0;
+                lr.lastReadOutboundTs = existing.lastReadOutboundTs ?? 0;
+                lr.unreadCount = existing.unreadCount;
+              }
+            }
+            await dbKit.rooms.bulkUpsertRooms(changedLocalRooms);
+          } catch (e) {
+            console.warn("[chat-store] Dexie incremental room sync failed:", e);
+          }
+        })();
+      }
+    }
+
     // Update display names only for changed rooms
     updateDisplayNames(changedMatrixRooms, kit);
 
@@ -951,10 +1175,12 @@ export const useChatStore = defineStore(NAMESPACE, () => {
 
   /** Load user profiles for members of specific rooms (viewport-based lazy loading).
    *  Uses Matrix SDK addresses when available (most complete), falls back to ChatRoom.members.
-   *  Only marks a room as "requested" if we actually found addresses to load or all are cached. */
+   *  Only marks a room as "requested" if we actually found addresses to load or all are cached.
+   *  On batch load failure, unblocks affected rooms so retry can happen on next call. */
   const loadProfilesForRoomIds = (roomIds: string[]) => {
     const uStore = useUserStore();
     const addressesToLoad: string[] = [];
+    const roomsInThisBatch: string[] = [];
     for (const roomId of roomIds) {
       if (profilesRequestedForRooms.has(roomId)) continue;
 
@@ -962,6 +1188,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       const sdkAddrs = matrixRoomAddresses.get(roomId);
       if (sdkAddrs && sdkAddrs.length > 0) {
         profilesRequestedForRooms.add(roomId);
+        roomsInThisBatch.push(roomId);
         for (const addr of sdkAddrs) {
           if (!uStore.users[addr]) addressesToLoad.push(addr);
         }
@@ -982,10 +1209,16 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         } catch { /* ignore invalid hex */ }
       }
       // Only mark as requested if we found member addresses (otherwise retry later when members load)
-      if (foundAddrs) profilesRequestedForRooms.add(roomId);
+      if (foundAddrs) {
+        profilesRequestedForRooms.add(roomId);
+        roomsInThisBatch.push(roomId);
+      }
     }
     if (addressesToLoad.length > 0) {
-      uStore.loadUsersBatch([...new Set(addressesToLoad)]);
+      uStore.loadUsersBatch([...new Set(addressesToLoad)]).catch(() => {
+        // Unblock rooms so they can be retried on next viewport load
+        for (const id of roomsInThisBatch) profilesRequestedForRooms.delete(id);
+      });
     }
   };
 
@@ -1157,6 +1390,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
 
   const setActiveRoom = (roomId: string | null) => {
     activeRoomId.value = roomId;
+    messageWindowSize.value = 50; // Reset pagination window
     if (roomId) {
       const room = getRoomById(roomId);
       // Save unread count before clearing — MessageList uses it for scroll-to-unread
@@ -1197,10 +1431,59 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     }
   };
 
+  const advanceInboundWatermark = async (roomId: string, timestamp: number) => {
+    // 1. Update Dexie watermark (monotonic — only moves forward)
+    if (chatDbKitRef.value) {
+      await chatDbKitRef.value.rooms.markAsRead(roomId, timestamp);
+    }
+
+    // 2. Update in-memory room unread count
+    const room = getRoomById(roomId);
+    if (room) {
+      room.unreadCount = 0;
+      triggerRef(rooms);
+    }
+
+    // 3. Send Matrix read receipt for the event at this timestamp
+    try {
+      const matrixService = getMatrixClientService();
+      const matrixRoom = matrixService.getRoom(roomId) as any;
+      if (matrixRoom) {
+        const events = matrixRoom.timeline ?? matrixRoom.getLiveTimeline?.()?.getEvents?.() ?? [];
+        // Find the event closest to this timestamp
+        let bestEvent = null;
+        for (let i = events.length - 1; i >= 0; i--) {
+          const ts = events[i].getTs?.() ?? events[i].event?.origin_server_ts ?? 0;
+          if (ts <= timestamp) {
+            bestEvent = events[i];
+            break;
+          }
+        }
+        if (bestEvent) {
+          sendReadReceiptIfVisible(roomId, bestEvent);
+        }
+      }
+    } catch (e) {
+      console.warn("[chat-store] advanceInboundWatermark sendReceipt error:", e);
+    }
+  };
+
+  /** Expand the message window for scroll-up pagination */
+  const expandMessageWindow = (amount = 50) => {
+    messageWindowSize.value += amount;
+  };
+
   /** Accept an invite: join the room and update membership */
   const acceptInvite = async (roomId: string) => {
     try {
       const matrixService = getMatrixClientService();
+      // Security (best-effort): block join if local state shows user is banned.
+      // Authoritative enforcement is server-side; this avoids a wasted network call.
+      const myUserId = matrixService.getUserId() ?? "";
+      if (isUserBanned(roomId, myUserId)) {
+        console.warn("[chat-store] acceptInvite blocked: user is banned from room", roomId);
+        return;
+      }
       await matrixService.joinRoom(roomId);
 
       // Update local membership to "join"
@@ -1294,6 +1577,8 @@ export const useChatStore = defineStore(NAMESPACE, () => {
             const memberId = (member as any).userId as string;
             if (memberId !== myUserId) {
               try {
+                // Security: reset power level before kick
+                await resetPowerLevel(roomId, memberId);
                 await matrixService.kick(roomId, memberId);
               } catch (kickErr) {
                 console.warn("[chat-store] removeRoom: kick failed for", memberId, kickErr);
@@ -1354,6 +1639,8 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       const matrixService = getMatrixClientService();
       const hexId = hexEncode(address).toLowerCase();
       const targetMatrixId = matrixService.matrixId(hexId);
+      // Security: reset power level before kick to prevent resurrection with elevated PL
+      await resetPowerLevel(roomId, targetMatrixId);
       await matrixService.kick(roomId, targetMatrixId);
 
       // Optimistic: remove member from local room data immediately
@@ -1423,6 +1710,8 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       const matrixService = getMatrixClientService();
       const hexId = hexEncode(address).toLowerCase();
       const targetMatrixId = matrixService.matrixId(hexId);
+      // Security: reset power level before ban
+      await resetPowerLevel(roomId, targetMatrixId);
       await matrixService.ban(roomId, targetMatrixId);
       // Optimistic: remove from members
       const room = getRoomById(roomId);
@@ -1486,6 +1775,11 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       const matrixService = getMatrixClientService();
       const hexId = hexEncode(address).toLowerCase();
       const targetMatrixId = matrixService.matrixId(hexId);
+      // Security: don't invite banned users
+      if (isUserBanned(roomId, targetMatrixId)) {
+        console.warn("[chat-store] inviteMember blocked: target is banned from room", roomId);
+        return false;
+      }
       await matrixService.invite(roomId, targetMatrixId);
 
       // Optimistic: add member to local room data immediately
@@ -1553,6 +1847,13 @@ export const useChatStore = defineStore(NAMESPACE, () => {
   const joinRoomById = async (roomId: string): Promise<boolean> => {
     try {
       const matrixService = getMatrixClientService();
+      // Security (best-effort): block join if local state shows user is banned.
+      // Authoritative enforcement is server-side; this avoids a wasted network call.
+      const myUserId = matrixService.getUserId() ?? "";
+      if (isUserBanned(roomId, myUserId)) {
+        console.warn("[chat-store] joinRoomById blocked: user is banned from room", roomId);
+        return false;
+      }
       await matrixService.joinRoom(roomId);
       await refreshRoomsNow();
       setActiveRoom(roomId);
@@ -1588,7 +1889,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     if (room) {
       room.lastMessage = message;
       room.updatedAt = message.timestamp;
-      if (roomId !== activeRoomId.value) {
+      if (roomId !== activeRoomId.value && message.senderId !== useAuthStore().address) {
         room.unreadCount++;
       }
       triggerRef(rooms);
@@ -1644,6 +1945,19 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         }
       }
     }
+  };
+
+  /** Enter detached mode: replace active messages with a context window around a target message. */
+  const enterDetachedMode = (roomId: string, msgs: Message[]) => {
+    messages.value[roomId] = msgs;
+    triggerRef(messages);
+    isDetachedFromLatest.value = true;
+  };
+
+  /** Exit detached mode: reload the room's latest messages and scroll to bottom. */
+  const exitDetachedMode = async (roomId: string) => {
+    isDetachedFromLatest.value = false;
+    await loadRoomMessages(roomId);
   };
 
   /** Replace a temporary message ID with the server-assigned event_id */
@@ -2279,6 +2593,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     }
 
     // Resolve reply references (fill in sender/content/type from parsed messages)
+    const unresolvedReplyMsgs: Message[] = [];
     for (const msg of msgs) {
       if (msg.replyTo?.id) {
         const referenced = msgMap.get(msg.replyTo.id);
@@ -2286,6 +2601,30 @@ export const useChatStore = defineStore(NAMESPACE, () => {
           msg.replyTo.senderId = referenced.senderId;
           msg.replyTo.content = stripBastyonLinks(stripMentionAddresses(referenced.content)).slice(0, 100);
           msg.replyTo.type = referenced.type;
+          if (referenced.deleted) msg.replyTo.deleted = true;
+        } else {
+          unresolvedReplyMsgs.push(msg);
+        }
+      }
+    }
+
+    // Fallback: resolve unresolved reply references from Dexie (single batched query)
+    if (unresolvedReplyMsgs.length > 0 && chatDbKitRef.value) {
+      const db = chatDbKitRef.value;
+      const unresolvedIds = unresolvedReplyMsgs.map(m => m.replyTo!.id);
+      const storedMsgs = await db.messages.getByEventIds(unresolvedIds);
+      const storedMap = new Map(storedMsgs.map(m => [m.eventId!, m]));
+      for (const msg of unresolvedReplyMsgs) {
+        const replyTo = msg.replyTo!;
+        const stored = storedMap.get(replyTo.id);
+        if (stored) {
+          if (stored.deleted || stored.softDeleted) {
+            replyTo.deleted = true;
+          } else {
+            replyTo.senderId = stored.senderId;
+            replyTo.content = stripBastyonLinks(stripMentionAddresses(stored.content)).slice(0, 100);
+            replyTo.type = stored.type;
+          }
         }
       }
     }
@@ -2313,14 +2652,18 @@ export const useChatStore = defineStore(NAMESPACE, () => {
 
   /** Apply existing read receipts from the Matrix room to set correct message statuses.
    *  Walks the timeline backwards, finds the latest event that has a read receipt
-   *  from a non-self user, and marks all own messages up to that point as "read". */
+   *  from a non-self user, and seeds the outbound watermark in Dexie.
+   *  Also updates in-memory message statuses for the fallback path. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const applyExistingReceipts = (matrixRoom: any, timelineEvents: unknown[], msgs: Message[], myUserId: string | null) => {
     if (!myUserId || msgs.length === 0) return;
     try {
       const myAddr = matrixIdToAddress(myUserId);
+      const roomId = (matrixRoom.roomId ?? matrixRoom.room_id) as string;
+
       // Find the latest event that has a read receipt from a non-self user
       let readUpToEventId: string | null = null;
+      let readUpToTimestamp = 0;
       for (let i = timelineEvents.length - 1; i >= 0; i--) {
         const ev = timelineEvents[i];
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -2331,12 +2674,19 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         if (hasOtherRead) {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           readUpToEventId = (ev as any)?.getId?.() ?? (ev as any)?.event?.event_id ?? null;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          readUpToTimestamp = (ev as any)?.getTs?.() ?? (ev as any)?.event?.origin_server_ts ?? 0;
           break;
         }
       }
       if (!readUpToEventId) return;
 
-      // Find the index of this event in our messages and mark all own messages up to it
+      // Seed outbound watermark in Dexie — this is the key fix for initial load
+      if (chatDbKitRef.value && roomId && readUpToTimestamp > 0) {
+        chatDbKitRef.value.rooms.updateOutboundWatermark(roomId, readUpToTimestamp).catch(() => {});
+      }
+
+      // Also update in-memory message statuses (for non-Dexie fallback path)
       const readUpToIdx = msgs.findIndex(m => m.id === readUpToEventId);
       if (readUpToIdx < 0) {
         // Event not in our parsed messages — mark all as read (receipt is beyond our range)
@@ -2401,9 +2751,11 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       let msgCount = countMessages(timelineEvents);
 
       if (msgCount < MIN_MESSAGES) {
-        // Retry once if timeline is completely empty — sync may not have populated it yet
+        // Brief yield if timeline is empty — sync may not have populated it yet
         if (timelineEvents.length === 0) {
-          await new Promise(r => setTimeout(r, 1500));
+          await new Promise(r => setTimeout(r, 300));
+          timelineEvents = getTimelineEvents(matrixRoom);
+          msgCount = countMessages(timelineEvents);
         }
 
         // Keep scrolling back until we have enough messages or hit the beginning
@@ -2432,13 +2784,49 @@ export const useChatStore = defineStore(NAMESPACE, () => {
 
       setMessages(roomId, msgs);
 
+      // Dual-write: persist all parsed messages to Dexie
+      if (chatDbKitRef.value && msgs.length > 0) {
+        const parsedMessages: ParsedMessage[] = msgs
+          .filter(m => m.id && !m.id.startsWith("msg_")) // Skip optimistic temp messages
+          .map(m => ({
+            eventId: m.id,
+            roomId: m.roomId,
+            senderId: m.senderId,
+            content: m.content,
+            timestamp: m.timestamp,
+            type: m.type,
+            fileInfo: m.fileInfo,
+            replyTo: m.replyTo,
+            forwardedFrom: m.forwardedFrom,
+            callInfo: m.callInfo,
+            pollInfo: m.pollInfo,
+            transferInfo: m.transferInfo,
+            linkPreview: m.linkPreview,
+            deleted: m.deleted,
+            systemMeta: m.systemMeta,
+            reactions: m.reactions,
+          }));
+        chatDbKitRef.value.eventWriter.writeMessages(parsedMessages)
+          .then(() => enrichUnresolvedReplies(roomId))
+          .catch(e => {
+            console.warn("[chat-store] EventWriter.writeMessages failed:", e);
+          });
+
+        // Sync reactions to Dexie for messages that already existed (bulkInsert skips duplicates).
+        // This ensures Dexie has up-to-date reactions from the timeline.
+        const dbKit = chatDbKitRef.value;
+        for (const m of msgs) {
+          if (m.reactions && Object.keys(m.reactions).length > 0 && m.id && !m.id.startsWith("msg_")) {
+            dbKit.messages.updateReactions(m.id, m.reactions).catch(() => {});
+          }
+        }
+      }
+
       // Load server-synced pinned messages after messages are available
       if (roomId === activeRoomId.value) {
         await loadPinnedMessages(roomId);
       }
 
-      // Fire-and-forget: cache messages to IndexedDB
-      cacheMessages(roomId, msgs).catch(() => {});
     } catch (e) {
       console.error("[chat-store] loadRoomMessages fatal error for room %s:", roomId, e);
       // Set empty messages so UI doesn't hang
@@ -2471,8 +2859,8 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       applyExistingReceipts(matrixRoom, timelineEvents, msgs, matrixService.getUserId());
       setMessages(roomId, msgs);
 
-      // Fire-and-forget: cache messages to IndexedDB
-      cacheMessages(roomId, msgs).catch(() => {});
+      // Enrich any still-unresolved reply previews from Dexie (non-blocking)
+      enrichUnresolvedReplies(roomId).catch(() => {});
 
       return true;
     } catch (e) {
@@ -2510,7 +2898,6 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       const msgs = await parseTimelineEvents(timelineEvents, roomId);
       applyExistingReceipts(matrixRoom, timelineEvents, msgs, matrixService.getUserId());
       setMessages(roomId, msgs);
-      cacheMessages(roomId, msgs).catch(() => {});
     } catch (e) {
       console.error("[chat-store] loadAllMessages error:", e);
     }
@@ -2556,53 +2943,164 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       }
     }
     triggerRef(messages);
+
+    // Dual-write: persist reaction to Dexie
+    if (chatDbKitRef.value) {
+      chatDbKitRef.value.eventWriter.writeReaction({
+        eventId: raw.event_id as string,
+        targetEventId,
+        emoji,
+        senderAddress: matrixIdToAddress(raw.sender as string),
+        isMine: raw.sender === getMatrixClientService().getUserId(),
+      }).catch((e) => {
+        console.warn("[chat-store] writeReaction to Dexie failed:", e);
+      });
+    }
   };
 
   /** Set the server-confirmed event ID for an own reaction */
   const setReactionEventId = (roomId: string, messageId: string, emoji: string, eventId: string) => {
+    // In-memory update (fallback path)
     const roomMessages = messages.value[roomId];
-    if (!roomMessages) return;
-    const msg = roomMessages.find(m => m.id === messageId);
-    if (msg?.reactions?.[emoji]) {
-      msg.reactions[emoji].myEventId = eventId;
-      triggerRef(messages);
+    if (roomMessages) {
+      const msg = roomMessages.find(m => m.id === messageId);
+      if (msg?.reactions?.[emoji]) {
+        msg.reactions[emoji].myEventId = eventId;
+        triggerRef(messages);
+      }
+    }
+
+    // Dexie write: persist the server event ID so removal works
+    if (chatDbKitRef.value) {
+      chatDbKitRef.value.messages.getByEventId(messageId).then(local => {
+        if (!local?.reactions?.[emoji]) return;
+        local.reactions[emoji].myEventId = eventId;
+        return chatDbKitRef.value!.messages.updateReactions(messageId, local.reactions);
+      }).catch((e) => {
+        console.warn("[chat-store] setReactionEventId Dexie write failed:", e);
+      });
     }
   };
 
   /** Optimistic add: instantly show a reaction before server confirms */
   const optimisticAddReaction = (roomId: string, messageId: string, emoji: string, userAddress: string) => {
+    // In-memory update (fallback path)
     const roomMessages = messages.value[roomId];
-    if (!roomMessages) return;
-    const msg = roomMessages.find(m => m.id === messageId);
-    if (!msg) return;
-    if (!msg.reactions) msg.reactions = {};
-    if (!msg.reactions[emoji]) {
-      msg.reactions[emoji] = { count: 0, users: [] };
+    if (roomMessages) {
+      const msg = roomMessages.find(m => m.id === messageId);
+      if (msg) {
+        if (!msg.reactions) msg.reactions = {};
+        if (!msg.reactions[emoji]) {
+          msg.reactions[emoji] = { count: 0, users: [] };
+        }
+        const rd = msg.reactions[emoji];
+        if (!rd.users.includes(userAddress)) {
+          rd.users.push(userAddress);
+          rd.count++;
+        }
+        rd.myEventId = "__optimistic__";
+        triggerRef(messages);
+      }
     }
-    const rd = msg.reactions[emoji];
-    if (!rd.users.includes(userAddress)) {
-      rd.users.push(userAddress);
-      rd.count++;
+
+    // Dexie write: liveQuery will auto-update UI
+    if (chatDbKitRef.value) {
+      chatDbKitRef.value.messages.getByEventId(messageId).then(local => {
+        if (!local) return;
+        const reactions = local.reactions ?? {};
+        if (!reactions[emoji]) {
+          reactions[emoji] = { count: 0, users: [] };
+        }
+        const rd = reactions[emoji];
+        if (!rd.users.includes(userAddress)) {
+          rd.users.push(userAddress);
+          rd.count = rd.users.length;
+        }
+        // Don't overwrite a real server ID if echo arrived before this async write
+        if (!rd.myEventId || !rd.myEventId.startsWith("$")) {
+          rd.myEventId = "__optimistic__";
+        }
+        return chatDbKitRef.value!.messages.updateReactions(messageId, reactions);
+      }).catch((e) => {
+        console.warn("[chat-store] optimisticAddReaction Dexie write failed:", e);
+      });
     }
-    // myEventId will be set by applyReaction when the server echoes back
-    rd.myEventId = "__optimistic__";
-    triggerRef(messages);
   };
 
   /** Optimistic remove: instantly hide a reaction before server confirms */
   const optimisticRemoveReaction = (roomId: string, messageId: string, emoji: string, userAddress: string) => {
+    // In-memory update (fallback path)
     const roomMessages = messages.value[roomId];
-    if (!roomMessages) return;
-    const msg = roomMessages.find(m => m.id === messageId);
-    if (!msg?.reactions?.[emoji]) return;
-    const rd = msg.reactions[emoji];
-    rd.users = rd.users.filter(u => u !== userAddress);
-    rd.count = rd.users.length;
-    delete rd.myEventId;
-    if (rd.count === 0) {
-      delete msg.reactions[emoji];
+    if (roomMessages) {
+      const msg = roomMessages.find(m => m.id === messageId);
+      if (msg?.reactions?.[emoji]) {
+        const rd = msg.reactions[emoji];
+        rd.users = rd.users.filter(u => u !== userAddress);
+        rd.count = rd.users.length;
+        delete rd.myEventId;
+        if (rd.count === 0) {
+          delete msg.reactions[emoji];
+        }
+        triggerRef(messages);
+      }
     }
-    triggerRef(messages);
+
+    // Dexie write: liveQuery will auto-update UI
+    if (chatDbKitRef.value) {
+      chatDbKitRef.value.messages.getByEventId(messageId).then(local => {
+        if (!local?.reactions?.[emoji]) return;
+        const reactions = local.reactions;
+        const rd = reactions[emoji];
+        rd.users = rd.users.filter(u => u !== userAddress);
+        rd.count = rd.users.length;
+        delete rd.myEventId;
+        if (rd.count === 0) {
+          delete reactions[emoji];
+        }
+        return chatDbKitRef.value!.messages.updateReactions(messageId, reactions);
+      }).catch((e) => {
+        console.warn("[chat-store] optimisticRemoveReaction Dexie write failed:", e);
+      });
+    }
+  };
+
+  /** Dual-write: persist a parsed message to Dexie alongside the in-memory store */
+  const dexieWriteMessage = (msg: Message, roomId: string, raw: Record<string, unknown>) => {
+    if (!chatDbKitRef.value) return;
+    const isEncrypted = msg.content === "[encrypted]";
+    const parsed: ParsedMessage = {
+      eventId: raw.event_id as string,
+      roomId,
+      senderId: msg.senderId,
+      content: msg.content,
+      timestamp: msg.timestamp,
+      type: msg.type,
+      clientId: (raw.unsigned as any)?.transaction_id,
+      fileInfo: msg.fileInfo,
+      replyTo: msg.replyTo,
+      forwardedFrom: msg.forwardedFrom,
+      callInfo: msg.callInfo,
+      pollInfo: msg.pollInfo,
+      transferInfo: msg.transferInfo,
+      linkPreview: msg.linkPreview,
+      deleted: msg.deleted,
+      systemMeta: msg.systemMeta,
+      // Preserve raw event for decryption retry
+      encryptedRaw: isEncrypted ? raw : undefined,
+    };
+    const myAddr = useAuthStore().address ?? "";
+    chatDbKitRef.value.eventWriter.writeMessage(parsed, myAddr, activeRoomId.value).then(result => {
+      // Enqueue decryption retry if message couldn't be decrypted
+      if (isEncrypted && result !== "duplicate" && chatDbKitRef.value?.decryptionWorker) {
+        chatDbKitRef.value.decryptionWorker.enqueue(
+          raw.event_id as string,
+          roomId,
+          JSON.stringify(raw),
+        ).catch(() => {});
+      }
+    }).catch(e => {
+      console.warn("[chat-store] EventWriter.writeMessage failed:", e);
+    });
   };
 
   /** Handle incoming timeline event from Matrix sync */
@@ -2634,6 +3132,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         const sysMsg = buildSystemMessage(raw, roomId);
         if (sysMsg) {
           addMessage(roomId, sysMsg);
+          dexieWriteMessage(sysMsg, roomId, raw);
         }
         return;
       }
@@ -2665,6 +3164,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
           callInfo: { callType: isVideo ? "video" : "voice", missed: reason === "invite_timeout", duration: Math.round(durationMs / 1000) },
         };
         addMessage(roomId, sysMsg);
+        dexieWriteMessage(sysMsg, roomId, raw);
         return;
       }
 
@@ -2688,7 +3188,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
           text: (a.body as string) ?? ((a["org.matrix.msc1767.text"] as string) ?? ""),
         }));
         const pollInfo: PollInfo = { question, options, votes: {} };
-        addMessage(roomId, {
+        const pollMsg: Message = {
           id: raw.event_id as string,
           roomId,
           senderId: matrixIdToAddress(raw.sender as string),
@@ -2697,7 +3197,9 @@ export const useChatStore = defineStore(NAMESPACE, () => {
           status: MessageStatus.sent,
           type: MessageType.poll,
           pollInfo,
-        });
+        };
+        addMessage(roomId, pollMsg);
+        dexieWriteMessage(pollMsg, roomId, raw);
         return;
       }
 
@@ -2778,26 +3280,70 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         return;
       }
 
-      // Cross-device sync: only skip own echo on the SENDING device.
-      // If there's a pending optimistic message (status=sending) in this room,
-      // this is the sending device's echo — skip it (updateMessageId handles it).
-      // Otherwise, this is from another device — process it normally.
+      // Own-echo dedup: suppress echoes of messages sent from THIS device,
+      // but allow cross-device messages (same user, different device) through
+      // the normal processing pipeline so they get fully decrypted and stored.
       const matrixService = getMatrixClientService();
       const myUserId = matrixService.getUserId();
       if (myUserId && raw.sender === myUserId) {
-        const roomMsgs = messages.value[roomId];
-        const hasPending = roomMsgs?.some(
-          (m) => m.senderId === matrixIdToAddress(myUserId) && m.status === MessageStatus.sending
-        );
-        if (hasPending) return;
-        // No pending optimistic → message is from another device, continue processing
+        const eventId = raw.event_id as string;
+
+        // Always skip local SDK event IDs (~! prefix) — the real $ event will follow
+        if (eventId.startsWith("~")) {
+          return;
+        }
+
+        if (chatDbKitRef.value) {
+          // Check if this is an echo of a message sent from THIS device.
+          // Match by clientId (unsigned.transaction_id) against pending messages.
+          const transactionId = (raw.unsigned as any)?.transaction_id;
+          if (transactionId) {
+            const pending = await chatDbKitRef.value.messages.getByClientId(transactionId);
+            if (pending) {
+              // This device sent it — confirmSent() already handled or will handle
+              return;
+            }
+          }
+
+          // Also check: if the eventId already exists in Dexie, skip (duplicate sync)
+          const existing = await chatDbKitRef.value.messages.getByEventId(eventId);
+          if (existing) return;
+
+          // Bastyon SDK doesn't set transaction_id — fall back to matching pending
+          // messages by checking if any ACTIVELY SENDING message in this room could be
+          // this echo. Only consider "pending"/"syncing" (not "failed") and only if
+          // created very recently (within 10s) to minimize false suppression of
+          // cross-device messages.
+          const pendingMsgs = await chatDbKitRef.value.messages.getPendingMessages(roomId);
+          const now = Date.now();
+          const eventTs = (raw.origin_server_ts as number) ?? now;
+          const recentSending = pendingMsgs.filter(m =>
+            m.senderId === matrixIdToAddress(myUserId) &&
+            (m.status === "pending" || m.status === "syncing") &&
+            Math.abs(eventTs - m.timestamp) < 10_000
+          );
+          if (recentSending.length > 0) {
+            // Likely an echo from this device — confirmSent() will reconcile
+            return;
+          }
+
+          // This is a cross-device message — fall through to normal processing.
+          // Do NOT return here — let the standard decrypt-and-write pipeline handle it.
+        } else {
+          // Legacy path (no Dexie): check in-memory pending messages
+          const roomMsgs = messages.value[roomId];
+          const hasPending = roomMsgs?.some(
+            (m) => m.senderId === matrixIdToAddress(myUserId) && m.status === MessageStatus.sending
+          );
+          if (hasPending) return;
+        }
       }
 
       // Handle donation/transfer messages (m.notice with txId)
       const mtype0 = content.msgtype as string;
       if (mtype0 === "m.notice" && content.txId) {
         const txBody = (content.body as string) ?? `Sent ${content.amount} PKOIN`;
-        addMessage(roomId, {
+        const transferMsg: Message = {
           id: raw.event_id as string,
           roomId,
           senderId: matrixIdToAddress(raw.sender as string),
@@ -2812,7 +3358,9 @@ export const useChatStore = defineStore(NAMESPACE, () => {
             to: content.to as string,
             message: txBody || undefined,
           },
-        });
+        };
+        addMessage(roomId, transferMsg);
+        dexieWriteMessage(transferMsg, roomId, raw);
         if (roomId === activeRoomId.value) {
           sendReadReceiptIfVisible(roomId, event);
         }
@@ -2843,7 +3391,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         try {
           const transfer = JSON.parse(body);
           const displayBody = transfer.message || `Sent ${transfer.amount} PKOIN`;
-          addMessage(roomId, {
+          const encTransferMsg: Message = {
             id: raw.event_id as string,
             roomId,
             senderId: matrixIdToAddress(raw.sender as string),
@@ -2858,7 +3406,9 @@ export const useChatStore = defineStore(NAMESPACE, () => {
               to: transfer.to as string,
               message: transfer.message || undefined,
             },
-          });
+          };
+          addMessage(roomId, encTransferMsg);
+          dexieWriteMessage(encTransferMsg, roomId, raw);
           if (roomId === activeRoomId.value) {
             sendReadReceiptIfVisible(roomId, event);
           }
@@ -2901,12 +3451,38 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       if (replyEventId) {
         // Try to find the referenced message in already loaded messages
         const referenced = messages.value[roomId]?.find(m => m.id === replyEventId);
-        replyTo = {
-          id: replyEventId,
-          senderId: referenced?.senderId ?? "",
-          content: referenced ? stripBastyonLinks(stripMentionAddresses(referenced.content)).slice(0, 100) : "",
-          type: referenced?.type,
-        };
+        if (referenced) {
+          replyTo = {
+            id: replyEventId,
+            senderId: referenced.senderId,
+            content: stripBastyonLinks(stripMentionAddresses(referenced.content)).slice(0, 100),
+            type: referenced.type,
+            deleted: referenced.deleted || undefined,
+          };
+        } else {
+          // Fallback: try Dexie for messages outside the current viewport
+          let stored: import("@/shared/lib/local-db/schema").LocalMessage | undefined;
+          if (chatDbKitRef.value) {
+            stored = await chatDbKitRef.value.messages.getByEventId(replyEventId);
+          }
+          if (stored) {
+            const isDeleted = stored.deleted || stored.softDeleted;
+            replyTo = {
+              id: replyEventId,
+              senderId: isDeleted ? "" : stored.senderId,
+              content: isDeleted ? "" : stripBastyonLinks(stripMentionAddresses(stored.content)).slice(0, 100),
+              type: isDeleted ? undefined : stored.type,
+              deleted: isDeleted || undefined,
+            };
+          } else {
+            // Original message not available — leave empty (UI shows "..." not "Deleted")
+            replyTo = {
+              id: replyEventId,
+              senderId: "",
+              content: "",
+            };
+          }
+        }
       }
 
       // Parse forwarded_from metadata
@@ -2933,6 +3509,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       };
 
       addMessage(roomId, message);
+      dexieWriteMessage(message, roomId, raw);
 
       // Auto-send read receipt if this room is currently active (visibility-aware)
       if (roomId === activeRoomId.value) {
@@ -2946,73 +3523,45 @@ export const useChatStore = defineStore(NAMESPACE, () => {
   /** Handle read receipt events from other users */
   const handleReceiptEvent = (event: unknown, room: unknown) => {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const receiptEvent = event as any;
       const roomObj = room as Record<string, unknown>;
       const roomId = roomObj?.roomId as string;
       if (!roomId) return;
-      if (!roomId) return;
-
-      const roomMessages = messages.value[roomId];
-      if (!roomMessages) return;
-      if (!roomMessages) return;
 
       const matrixService = getMatrixClientService();
       const myUserId = matrixService.getUserId();
 
-      // Get receipt content: { eventId: { "m.read": { userId: { ts } } } }
       const content = receiptEvent?.getContent?.() ?? receiptEvent?.event?.content;
       if (!content) return;
-      if (!content) return;
 
-      let statusChanged = false;
       for (const [eventId, receiptTypes] of Object.entries(content)) {
         const readReceipts = (receiptTypes as Record<string, unknown>)?.["m.read"] as Record<string, unknown> | undefined;
         if (!readReceipts) continue;
 
         for (const userId of Object.keys(readReceipts)) {
-          if (userId === myUserId) continue; // skip our own receipts
           if (userId === myUserId) continue;
 
-          const msgIdx = roomMessages.findIndex(m => m.id === eventId);
-          if (msgIdx >= 0) {
-            const myAddr = matrixIdToAddress(myUserId ?? "");
-            // Mark this message and all earlier own messages as read
-            for (let i = msgIdx; i >= 0; i--) {
-              const msg = roomMessages[i];
-              if (msg.senderId !== myAddr) continue;
-              if (msg.status === MessageStatus.read) break;
-              if (msg.status === MessageStatus.sent || msg.status === MessageStatus.delivered) {
-                msg.status = MessageStatus.read;
-                statusChanged = true;
-              }
-            }
-          }
-        }
-      }
-      // Replace the array reference when statuses changed so that activeMessages computed
-      // returns a new reference. With shallowRef + no-spread in activeMessages, in-place
-      // mutations don't change the array reference, so Vue's computed optimization would
-      // see "no change" and skip re-rendering the chat view (same bug as with in-place push
-      // described in addMessage). This is the root cause of sidebar showing read but chat not.
-      if (statusChanged) {
-        messages.value[roomId] = [...roomMessages];
-      }
-      triggerRef(messages);
+          // Find the message timestamp for the watermark
+          const roomMessages = messages.value[roomId];
+          const msg = roomMessages?.find(m => m.id === eventId);
+          const receiptData = (readReceipts[userId] as Record<string, unknown>) ?? {};
+          const timestamp = msg?.timestamp ?? (receiptData.ts as number) ?? 0;
+          if (timestamp === 0) continue;
 
-      // Sync sidebar: if any status changed, update room.lastMessage.
-      // Find the sidebar's lastMessage by ID in the messages array (not just the last element)
-      // to handle cases where lastMessage isn't the most recent message.
-      if (statusChanged) {
-        const room = getRoomById(roomId);
-        if (room?.lastMessage) {
-          const updatedMsg = roomMessages.find(m => m.id === room.lastMessage!.id);
-          if (updatedMsg && room.lastMessage.status !== updatedMsg.status) {
-            room.lastMessage = { ...updatedMsg };
+          // Write watermark to Dexie (single source of truth)
+          if (chatDbKitRef.value) {
+            chatDbKitRef.value.eventWriter.writeReceipt({
+              eventId,
+              readerAddress: matrixIdToAddress(userId),
+              roomId,
+              timestamp,
+            }).catch(() => {});
           }
-          triggerRef(rooms);
         }
       }
+
+      // Trigger reactivity for in-memory path
+      triggerRef(rooms);
     } catch (e) {
       console.warn("[chat-store] handleReceiptEvent error:", e);
     }
@@ -3030,8 +3579,22 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       const roomId = (roomObj?.roomId as string) ?? "";
       if (!roomId) return;
 
+      console.info("[Redaction] processing", { redactedEventId, roomId });
+
       const roomMessages = messages.value[roomId];
-      if (!roomMessages) return;
+      if (!roomMessages) {
+        console.info("[Redaction] no in-memory messages for room, writing to Dexie only");
+        // Still write to Dexie even if in-memory store is empty
+        if (chatDbKitRef.value && redactedEventId) {
+          chatDbKitRef.value.eventWriter.writeRedaction({
+            redactedEventId,
+            roomId,
+          }).catch((e) => {
+            console.warn("[chat-store] writeRedaction failed:", e);
+          });
+        }
+        return;
+      }
 
       // Check if the redacted event was a reaction — find and remove it
       for (const msg of roomMessages) {
@@ -3039,6 +3602,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         for (const [emoji, data] of Object.entries(msg.reactions)) {
           if (data.myEventId === redactedEventId) {
             // It's our own reaction being redacted
+            console.info("[Redaction] matched own reaction", { msgId: msg.id, emoji, redactedEventId });
             const matrixService = getMatrixClientService();
             const myAddr = matrixIdToAddress(matrixService.getUserId() ?? "");
             data.users = data.users.filter(u => u !== myAddr);
@@ -3051,9 +3615,20 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         }
       }
 
+      // Persist redaction to Dexie (handles room preview update internally)
+      if (chatDbKitRef.value && redactedEventId) {
+        chatDbKitRef.value.eventWriter.writeRedaction({
+          redactedEventId,
+          roomId,
+        }).catch((e) => {
+          console.warn("[chat-store] writeRedaction failed:", e);
+        });
+      }
+
       // Check if the redacted event is a message — mark as deleted
       const redactedMsg = roomMessages.find(m => m.id === redactedEventId);
       if (redactedMsg && !redactedMsg.deleted) {
+        console.info("[Redaction] marking message as deleted", { msgId: redactedMsg.id });
         redactedMsg.deleted = true;
         redactedMsg.content = "";
         redactedMsg.fileInfo = undefined;
@@ -3062,7 +3637,17 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         redactedMsg.pollInfo = undefined;
         redactedMsg.transferInfo = undefined;
         redactedMsg.forwardedFrom = undefined;
-        // Update room lastMessage preview
+
+        // Mark replyTo.deleted on any in-memory message that references the redacted one
+        for (const msg of roomMessages) {
+          if (msg.replyTo?.id === redactedEventId) {
+            msg.replyTo.deleted = true;
+            msg.replyTo.senderId = "";
+            msg.replyTo.content = "";
+          }
+        }
+
+        // Update room lastMessage preview — show deleted placeholder
         const chatRoom = getRoomById(roomId);
         if (chatRoom && chatRoom.lastMessage?.id === redactedEventId) {
           chatRoom.lastMessage = { ...redactedMsg };
@@ -3074,6 +3659,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
 
       // If we didn't find it as a known reaction eventId or message, re-parse reactions
       // from the Matrix room timeline to get accurate state
+      console.warn("[Redaction] event not found as reaction or message, triggering full rebuild", { redactedEventId, roomId });
       const matrixService = getMatrixClientService();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const matrixRoom = matrixService.getRoom(roomId) as any;
@@ -3085,7 +3671,9 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     }
   };
 
-  /** Rebuild reactions for all messages in a room from the Matrix timeline */
+  /** Rebuild reactions for all messages in a room from the Matrix timeline.
+   *  Merges Dexie-persisted reactions with timeline data so that reactions
+   *  outside the current (possibly short) timeline window are preserved. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const rebuildReactionsForRoom = (roomId: string, matrixRoom: any) => {
     const roomMessages = messages.value[roomId];
@@ -3094,7 +3682,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     const timelineEvents = getTimelineEvents(matrixRoom);
     const matrixService = getMatrixClientService();
 
-    // Collect all non-redacted reaction events
+    // Collect all non-redacted reaction events from the timeline
     const reactionMap = new Map<string, Record<string, { count: number; users: string[]; myEventId?: string }>>();
 
     for (const ev of timelineEvents) {
@@ -3128,11 +3716,31 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       }
     }
 
-    // Apply to stored messages
+    // Merge: for messages NOT in the timeline reaction map, preserve Dexie reactions
+    // so that reactions outside the current (short) timeline window survive.
     for (const msg of roomMessages) {
-      msg.reactions = reactionMap.get(msg.id) ?? undefined;
+      const timelineReactions = reactionMap.get(msg.id);
+      if (timelineReactions) {
+        // Timeline has reactions for this message — use them (server is authoritative)
+        msg.reactions = timelineReactions;
+      }
+      // If timeline has NO reactions for this message, keep existing msg.reactions
+      // (they came from Dexie via liveQuery and are still valid).
+      // Only clear if timeline explicitly showed zero reactions for a message
+      // that WAS in the timeline window.
     }
     triggerRef(messages);
+
+    // Also sync Dexie with the merged state (non-blocking)
+    if (chatDbKitRef.value) {
+      for (const msg of roomMessages) {
+        if (msg.reactions) {
+          chatDbKitRef.value.messages.updateReactions(msg.id, msg.reactions).catch((e) => {
+            console.warn("[chat-store] rebuildReactions Dexie sync failed:", e);
+          });
+        }
+      }
+    }
   };
 
   /** Handle being kicked/banned from a room — remove it from UI immediately */
@@ -3210,11 +3818,27 @@ export const useChatStore = defineStore(NAMESPACE, () => {
   /** Load cached messages. Returns cache age in ms (0 if no cache). */
   const loadCachedMessages = async (roomId: string): Promise<number> => {
     if (messages.value[roomId]?.length) return 0; // already have messages
+
+    // Primary path: read from Dexie (local-first source of truth)
+    if (chatDbKitRef.value) {
+      try {
+        const localMsgs = await chatDbKitRef.value.messages.getMessages(roomId, 50);
+        if (localMsgs.length > 0) {
+          // Dexie data will arrive via liveQuery → activeMessages computed.
+          // No need to write to messages.value — just signal that cache exists.
+          return 0;
+        }
+      } catch (e) {
+        console.warn("[chat-store] loadCachedMessages (Dexie) failed:", e);
+      }
+      return 0;
+    }
+
+    // Fallback: old localStorage cache (only when Dexie not yet initialized)
     try {
       const cached = await getCachedMessages(roomId);
       if (cached.length > 0 && !messages.value[roomId]?.length) {
         const msgs = cached as Message[];
-        // Drop stale optimistic messages from previous sessions
         const cleaned = msgs.filter(
           m => m.status !== MessageStatus.sending && m.status !== MessageStatus.failed,
         );
@@ -3247,9 +3871,11 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     activeRoomId,
     addMessage,
     addRoom,
+    advanceInboundWatermark,
     clearDeletedRoom,
     deletingMessage,
     editingMessage,
+    enterDetachedMode,
     enterSelectionMode,
     exitSelectionMode,
     forwardingMessages,
@@ -3260,7 +3886,9 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     handleReceiptEvent,
     handleRedactionEvent,
     handleTimelineEvent,
+    exitDetachedMode,
     inviteMember,
+    isDetachedFromLatest,
     isRoomPublic,
     joinRoomById,
     banMember,
@@ -3326,5 +3954,16 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     updateMessageId,
     updateMessageIdAndStatus,
     updateMessageStatus,
+    chatDbKitRef,
+    setChatDbKit,
+    getDbKit,
+    dexieMessagesReady,
+    dexieRoomsReady,
+    expandMessageWindow,
+    messageWindowSize,
+    /** Clear profile-requested flags for given rooms so loadProfilesForRoomIds retries them */
+    clearProfileCache(roomIds: string[]) {
+      for (const id of roomIds) profilesRequestedForRooms.delete(id);
+    },
   };
 });

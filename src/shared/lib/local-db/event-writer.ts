@@ -1,4 +1,4 @@
-import type { ChatDatabase, LocalMessage, LocalMessageStatus } from "./schema";
+import type { ChatDatabase, LocalMessage } from "./schema";
 import type { MessageRepository } from "./message-repository";
 import type { RoomRepository } from "./room-repository";
 import type { UserRepository } from "./user-repository";
@@ -30,6 +30,13 @@ export interface ParsedMessage {
   transferInfo?: TransferInfo;
   /** Present when the message is our own echo (matched by clientId) */
   clientId?: string;
+  linkPreview?: import("@/entities/chat/model/types").LinkPreview;
+  deleted?: boolean;
+  systemMeta?: { template: string; senderAddr: string; targetAddr?: string };
+  /** Raw encrypted event JSON — stored for decryption retry when content is "[encrypted]" */
+  encryptedRaw?: Record<string, unknown>;
+  /** Reactions parsed from timeline — written to Dexie during bulk load */
+  reactions?: Record<string, { count: number; users: string[]; myEventId?: string }>;
 }
 
 /** A parsed reaction event */
@@ -58,6 +65,8 @@ export interface ParsedReceipt {
   eventId: string;
   readerAddress: string;
   roomId: string;
+  /** Timestamp of the read message — used to advance the outbound watermark */
+  timestamp: number;
 }
 
 type OnChangeCallback = (roomId: string) => void;
@@ -103,20 +112,25 @@ export class EventWriter {
   /**
    * Write a single incoming message to local DB.
    * Handles dedup (own echo via clientId, duplicate eventId).
-   * Returns the write result for the caller to decide on UI update.
+   * Only increments unread for messages from OTHER users in NON-ACTIVE rooms.
    */
   async writeMessage(
     parsed: ParsedMessage,
+    myAddress: string,
+    activeRoomId: string | null,
   ): Promise<"inserted" | "updated" | "duplicate"> {
     const localMsg = this.toLocalMessage(parsed);
     const result = await this.messageRepo.upsertFromServer(localMsg);
 
-    // Update room metadata if message was actually new
     if (result === "inserted" || result === "updated") {
       await this.updateRoomPreview(parsed);
     }
 
     if (result === "inserted") {
+      // Only increment unread for OTHER people's messages in NON-ACTIVE rooms
+      if (parsed.senderId !== myAddress && parsed.roomId !== activeRoomId) {
+        await this.incrementUnread(parsed.roomId);
+      }
       this.onChange?.(parsed.roomId);
     }
 
@@ -167,6 +181,14 @@ export class EventWriter {
     }
 
     await this.messageRepo.updateReactions(reaction.targetEventId, reactions);
+
+    // Cascade: update room preview if this is the last message (non-blocking)
+    this.cascadeReactionToRoom(msg.roomId, reaction.targetEventId, {
+      emoji: reaction.emoji,
+      senderAddress: reaction.senderAddress,
+      timestamp: Date.now(),
+    }).catch(() => {});
+
     this.onChange?.(msg.roomId);
   }
 
@@ -193,6 +215,11 @@ export class EventWriter {
     }
 
     await this.messageRepo.updateReactions(targetEventId, msg.reactions);
+
+    // Cascade: recalculate room reaction from remaining (non-blocking)
+    const lastReaction = this.pickLastReaction(msg.reactions);
+    this.cascadeReactionToRoom(msg.roomId, targetEventId, lastReaction).catch(() => {});
+
     this.onChange?.(msg.roomId);
   }
 
@@ -210,9 +237,32 @@ export class EventWriter {
   // Redactions (deletions)
   // ---------------------------------------------------------------------------
 
-  /** Mark a message as soft-deleted */
+  /** Mark a message as soft-deleted and update room preview if needed */
   async writeRedaction(redaction: ParsedRedaction): Promise<void> {
     await this.messageRepo.softDelete(redaction.redactedEventId);
+
+    // Mark replyTo.deleted on messages referencing the redacted one in Dexie
+    await this.messageRepo.markReplyDeleted(redaction.redactedEventId);
+
+    // Always update room preview after deletion
+    const prevMsg = await this.messageRepo.getLastNonDeleted(redaction.roomId);
+    if (prevMsg) {
+      await this.updateRoomPreviewFromLocal(prevMsg);
+    } else {
+      // All messages in room are deleted — show tombstone preview.
+      // Use db.rooms.put-style update to handle rooms not yet in Dexie.
+      const room = await this.roomRepo.getRoom(redaction.roomId);
+      if (room) {
+        await this.roomRepo.updateLastMessage(
+          redaction.roomId,
+          "🚫 Message deleted",
+          room.updatedAt,
+          room.lastMessageSenderId ?? "",
+          room.lastMessageType,
+        );
+      }
+    }
+
     this.onChange?.(redaction.roomId);
   }
 
@@ -220,18 +270,12 @@ export class EventWriter {
   // Read receipts
   // ---------------------------------------------------------------------------
 
-  /** Update read status for a message */
+  /** Update outbound read watermark for a room (someone read our message) */
   async writeReceipt(receipt: ParsedReceipt): Promise<void> {
-    const msg = await this.messageRepo.getByEventId(receipt.eventId);
-    if (!msg) return;
-
-    // If this is someone reading our message, mark it as "read"
-    if (msg.status === "synced" || msg.status === "delivered") {
-      await this.messageRepo.updateStatus(
-        { eventId: receipt.eventId },
-        "read" as LocalMessageStatus,
-      );
-    }
+    // Advance the outbound watermark — all our messages with ts <= receipt.timestamp
+    // are now considered "read" (derived, no per-message update needed)
+    await this.roomRepo.updateOutboundWatermark(receipt.roomId, receipt.timestamp);
+    this.onChange?.(receipt.roomId);
   }
 
   // ---------------------------------------------------------------------------
@@ -279,9 +323,10 @@ export class EventWriter {
 
   /** Convert a ParsedMessage to a LocalMessage for DB insertion */
   private toLocalMessage(parsed: ParsedMessage): LocalMessage {
+    const isEncrypted = parsed.content === "[encrypted]" && parsed.encryptedRaw;
     return {
       eventId: parsed.eventId,
-      clientId: parsed.clientId ?? crypto.randomUUID(),
+      clientId: parsed.clientId ?? `srv_${parsed.eventId}`,
       roomId: parsed.roomId,
       senderId: parsed.senderId,
       content: parsed.content,
@@ -297,27 +342,90 @@ export class EventWriter {
       callInfo: parsed.callInfo,
       pollInfo: parsed.pollInfo,
       transferInfo: parsed.transferInfo,
+      linkPreview: parsed.linkPreview,
+      deleted: parsed.deleted,
+      systemMeta: parsed.systemMeta,
+      reactions: parsed.reactions,
+      // Decryption retry metadata
+      encryptedBody: isEncrypted ? JSON.stringify(parsed.encryptedRaw) : undefined,
+      decryptionStatus: isEncrypted ? "pending" : "ok",
     };
+  }
+
+  /** Generate preview text from message type and content */
+  private getPreviewText(
+    type: MessageType,
+    content: string,
+    transferAmount?: number,
+  ): string {
+    if (type === MessageType.image) return "[photo]";
+    if (type === MessageType.video) return "[video]";
+    if (type === MessageType.audio) return "[voice message]";
+    if (type === MessageType.file) return "[file]";
+    if (type === MessageType.poll) return "[poll]";
+    if (type === MessageType.transfer) return `[transfer] ${transferAmount ?? 0} PKOIN`;
+    return content;
   }
 
   /** Update room metadata after a new message */
   private async updateRoomPreview(parsed: ParsedMessage): Promise<void> {
-    let preview = parsed.content;
-    if (parsed.type === MessageType.image) preview = "📷 Photo";
-    else if (parsed.type === MessageType.video) preview = "🎬 Video";
-    else if (parsed.type === MessageType.audio) preview = "🎵 Audio";
-    else if (parsed.type === MessageType.file) preview = "📎 File";
-    else if (parsed.type === MessageType.poll) preview = "📊 Poll";
-    else if (parsed.type === MessageType.transfer) {
-      preview = `💰 ${parsed.transferInfo?.amount ?? 0} PKOIN`;
-    }
-
+    const preview = this.getPreviewText(
+      parsed.type,
+      parsed.content,
+      parsed.transferInfo?.amount,
+    );
     await this.roomRepo.updateLastMessage(
       parsed.roomId,
       preview,
       parsed.timestamp,
       parsed.senderId,
       parsed.type,
+      parsed.eventId,
     );
+  }
+
+  /** Update room preview from an existing LocalMessage (used after deletion) */
+  private async updateRoomPreviewFromLocal(msg: LocalMessage): Promise<void> {
+    const preview = this.getPreviewText(
+      msg.type,
+      msg.content,
+      msg.transferInfo?.amount,
+    );
+    await this.roomRepo.updateLastMessage(
+      msg.roomId,
+      preview,
+      msg.serverTs ?? msg.timestamp,
+      msg.senderId,
+      msg.type,
+      msg.eventId ?? undefined,
+    );
+  }
+
+  /** Cascade reaction change to room preview if target is the last message */
+  private async cascadeReactionToRoom(
+    roomId: string,
+    targetEventId: string,
+    reaction: import("./schema").LocalRoom["lastMessageReaction"],
+  ): Promise<void> {
+    const room = await this.roomRepo.getRoom(roomId);
+    if (!room || room.lastMessageEventId !== targetEventId) return;
+    await this.roomRepo.updateLastMessageReaction(roomId, reaction);
+  }
+
+  /** Pick the most recent reaction from remaining reactions map */
+  private pickLastReaction(
+    reactions: LocalMessage["reactions"],
+  ): import("./schema").LocalRoom["lastMessageReaction"] {
+    if (!reactions) return null;
+    for (const [emoji, data] of Object.entries(reactions)) {
+      if (data.users.length > 0) {
+        return {
+          emoji,
+          senderAddress: data.users[data.users.length - 1],
+          timestamp: Date.now(),
+        };
+      }
+    }
+    return null;
   }
 }
