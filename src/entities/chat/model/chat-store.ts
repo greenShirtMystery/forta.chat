@@ -887,7 +887,9 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       for (let i = 0; i < toLoad.length; i += BATCH) {
         const batch = toLoad.slice(i, i + BATCH);
         await Promise.all(batch.map(async (mr: any) => {
-          try { await mr.loadMembersIfNeeded(); } catch { /* ignore */ }
+          try { await mr.loadMembersIfNeeded(); } catch (e) {
+            console.warn(`[chat-store] loadMembersIfNeeded failed for room ${mr.roomId}:`, e);
+          }
         }));
         await new Promise(r => setTimeout(r, 0));
       }
@@ -1260,7 +1262,14 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       }
     }
     if (addressesToLoad.length > 0) {
-      uStore.loadUsersBatch([...new Set(addressesToLoad)]).catch(() => {
+      const uniqueAddrs = [...new Set(addressesToLoad)];
+      uStore.loadUsersBatch(uniqueAddrs).then(() => {
+        // Check if any addresses still missing after successful load — likely deleted accounts
+        const stillMissing = uniqueAddrs.filter(a => !uStore.users[a]);
+        if (stillMissing.length > 0) {
+          console.warn(`[chat-store] loadProfilesForRoomIds: ${stillMissing.length} profiles not found after batch load (deleted accounts?):`, stillMissing);
+        }
+      }).catch(() => {
         // Unblock rooms so they can be retried on next viewport load
         for (const id of roomsInThisBatch) profilesRequestedForRooms.delete(id);
       });
