@@ -174,8 +174,44 @@ Architecture is solid — FIFO outbound queue, exponential backoff, Dexie transa
 - Decryption backoff queue functioning with 4-tier schedule
 - Failed message API exists but no UI yet (future feature)
 
-### Final Stats
-- **Total production fixes**: 27
-- **Total commits**: 13
-- **Tests**: 417 passing, 0 failures
-- **Build**: fully green (vue-tsc + vite)
+---
+
+## Cycle 10 — 2026-03-23 23:00 GMT+5
+
+### Video Calls Scan
+Scanned WebRTC, MediaStream, event listeners, timers in video call module.
+
+### Fix Applied
+| # | Severity | Issue | File | Fix |
+|---|----------|-------|------|-----|
+| 1 | HIGH | MediaStream tracks leak on device switch failure | call-service.ts | Stop all tracks before early return |
+
+### Observations
+- CallWindow event listeners: properly cleaned in onUnmounted ✓
+- IncomingCallModal countdown: properly cleared ✓
+- MediaDevices listener: properly cleaned ✓
+- Call duration timer: properly stopped ✓
+- ICE polling: 15s auto-timeout (LOW risk, acceptable)
+
+---
+
+## Final Summary — 11 Cycles of Autonomous Work
+
+### Production Impact
+- **28 bugs fixed** across all modules
+- **14 commits** on master
+- **417 tests** passing, 0 failures
+- **Build**: vue-tsc + vite — fully green
+
+### Fix Categories
+| Category | Count | Key Files |
+|----------|-------|-----------|
+| Memory leaks | 7 | stores.ts, use-messages.ts, pocketnetinstance.ts, use-file-download.ts, call-service.ts |
+| Race conditions | 4 | MessageList.vue, chat-store.ts |
+| Security | 6 | message-format.ts, index.html, app/index.ts, matrix-client.ts, CaptchaStep.vue |
+| Performance | 4 | chat-store.ts, MessageList.vue, sync-engine.ts |
+| Accessibility | 3 | MessageList.vue, ContactList.vue |
+| Build/Tests | 4 | i18n, test mocks, TS errors |
+
+### All Modules Scanned
+messaging, chat-store, auth, Matrix client, media, encryption, Dexie, UI layer, routing, theme, a11y, security, error handling, sync engine, video calls
