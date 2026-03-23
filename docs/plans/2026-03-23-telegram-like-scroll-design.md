@@ -28,10 +28,12 @@ TIER 3: NETWORK — Matrix scrollback (only when Dexie exhausted)
 - `useLiveQuery` no longer resets `isReady` on re-subscription
 - Added Dexie dual-write to `loadMoreMessages`
 
-### Phase 1: Full History Preload
-- `preloadFullHistory()` — on room enter, loops Matrix scrollback and bulk-writes ALL history to Dexie
-- `doLoadMore` → just `expandMessageWindow()` — pure local reads, zero network latency
-- Network fallback only as safety net if preload hasn't finished yet
+### Phase 1: Incremental Background Prefetch (Telegram-like)
+- `prefetchNextBatch()` — fetches 25 messages from Matrix, writes ONLY to Dexie (no UI)
+- Called after room load + after each scroll-up expand → always one batch ahead
+- `doLoadMore` → `expandMessageWindow()` reads from local Dexie cache (instant)
+- If cache empty (prefetch hasn't arrived) → network fallback as safety net
+- After each expand → fire-and-forget `prefetchNextBatch` for next scroll-up
 - Virtua shift mode permanently disabled — manual scrollTop correction via ResizeObserver
 - Scroll events suppressed during pagination to prevent jitter
 

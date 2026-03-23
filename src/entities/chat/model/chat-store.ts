@@ -3094,41 +3094,33 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     }
   };
 
-  /** Preload full room history into Dexie in background.
-   *  Loops scrollback until exhausted, writing all messages to IndexedDB.
-   *  Does NOT touch any reactive UI state — the data sits silently in Dexie
+  /** Prefetch one batch of older messages into Dexie (background, no UI).
+   *  Calls Matrix scrollback once (25 messages), writes to IndexedDB only.
+   *  Does NOT touch any reactive UI state — data sits silently in Dexie
    *  until expandMessageWindow() reads it on scroll-up.
-   *  Fire-and-forget: call after initial room load completes. */
-  const historyPreloadActive = ref(false);
-  const preloadFullHistory = async (roomId: string): Promise<void> => {
-    if (historyPreloadActive.value) return;
-    historyPreloadActive.value = true;
+   *  Returns true if there are more messages to fetch. */
+  let prefetchInFlight = false;
+  const prefetchNextBatch = async (roomId: string): Promise<boolean> => {
+    if (prefetchInFlight) return true;
+    prefetchInFlight = true;
     try {
       const matrixService = getMatrixClientService();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const matrixRoom = matrixService.getRoom(roomId) as any;
-      if (!matrixRoom) return;
+      if (!matrixRoom) return false;
+      if (activeRoomId.value !== roomId) return false;
 
-      // Loop scrollback until no more history or room changes
-      const MAX_ITERATIONS = 30; // ~1500 messages max
-      for (let i = 0; i < MAX_ITERATIONS; i++) {
-        if (activeRoomId.value !== roomId) return;
-
-        const prevCount = getTimelineEvents(matrixRoom).length;
-        try {
-          await matrixService.scrollback(roomId, 50);
-        } catch {
-          break;
-        }
-        if (getTimelineEvents(matrixRoom).length <= prevCount) break;
-
-        // Yield to UI thread between scrollback calls
-        await new Promise(r => setTimeout(r, 0));
+      const prevCount = getTimelineEvents(matrixRoom).length;
+      try {
+        await matrixService.scrollback(roomId, 25);
+      } catch {
+        return false;
       }
 
-      if (activeRoomId.value !== roomId) return;
+      const newCount = getTimelineEvents(matrixRoom).length;
+      if (newCount <= prevCount) return false; // no more history
 
-      // Parse all events at once and bulk-write to Dexie
+      // Write ONLY to Dexie — no reactive state changes
       const events = getTimelineEvents(matrixRoom);
       const msgs = await parseTimelineEvents(events, roomId);
 
@@ -3156,13 +3148,12 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         await chatDbKitRef.value.eventWriter.writeMessages(parsedMessages);
       }
 
-      if (import.meta.env.DEV) {
-        console.log("[chat-store] preloadFullHistory done: %d events for %s", events.length, roomId);
-      }
+      return true;
     } catch (e) {
-      console.warn("[chat-store] preloadFullHistory error:", e);
+      console.warn("[chat-store] prefetchNextBatch error:", e);
+      return false;
     } finally {
-      historyPreloadActive.value = false;
+      prefetchInFlight = false;
     }
   };
 
@@ -4206,8 +4197,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     loadPinnedMessages,
     loadMoreMessages,
     loadRoomMessages,
-    preloadFullHistory,
-    historyPreloadActive,
+    prefetchNextBatch,
     markRoomAsRead,
     markRoomChanged,
     messages,
