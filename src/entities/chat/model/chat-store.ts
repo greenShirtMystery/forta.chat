@@ -728,6 +728,23 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     const sorted = sortedRooms.value;
     const activeId = activeRoomId.value;
 
+    // Check if Matrix SDK has rooms — if not, defer preload
+    try {
+      const matrixService = getMatrixClientService();
+      const sdkRooms = matrixService.getRooms() as unknown[];
+      if ((!sdkRooms || sdkRooms.length === 0) && sorted.length > 0) {
+        // SDK hasn't populated rooms yet — retry in 2s
+        preloadDone = false;
+        setTimeout(() => preloadVisibleRooms(), 2000);
+        return;
+      }
+    } catch {
+      // Matrix service not ready — retry later
+      preloadDone = false;
+      setTimeout(() => preloadVisibleRooms(), 2000);
+      return;
+    }
+
     // Priority: active room + N neighbors (immediate network preload)
     const activeIdx = activeId ? sorted.findIndex(r => r.id === activeId) : -1;
     const priorityRooms: typeof sorted = [];
@@ -762,6 +779,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         if (batch.length === 0) return;
         Promise.all(batch.map(room => {
           cachePreloadedRoomIds.add(room.id);
+          preloadedRoomIds.add(room.id); // Prevent preloadRoomsByIds from triggering network load
           return messages.value[room.id]?.length ? Promise.resolve() : loadCachedMessages(room.id).catch(() => {});
         })).then(() => {
           if (offset + 3 < remaining.length) {
@@ -2149,7 +2167,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
   /** Exit detached mode: reload the room's latest messages and scroll to bottom. */
   const exitDetachedMode = async (roomId: string) => {
     isDetachedFromLatest.value = false;
-    await loadRoomMessages(roomId);
+    await loadRoomMessages(roomId, { waitForSdk: true });
   };
 
   /** Replace a temporary message ID with the server-assigned event_id */
@@ -3031,11 +3049,20 @@ export const useChatStore = defineStore(NAMESPACE, () => {
   };
 
   /** Load timeline events for a room and convert to Messages */
-  const loadRoomMessages = async (roomId: string) => {
+  const loadRoomMessages = async (roomId: string, { waitForSdk = false } = {}) => {
     try {
       const matrixService = getMatrixClientService();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const matrixRoom = matrixService.getRoom(roomId) as any;
+      let matrixRoom = matrixService.getRoom(roomId) as any;
+
+      // When called from MessageList (user opened a room), SDK may still be
+      // processing the sync — wait briefly. Background preloads should NOT wait.
+      if (!matrixRoom && waitForSdk) {
+        for (let attempt = 0; attempt < 5 && !matrixRoom; attempt++) {
+          await new Promise(r => setTimeout(r, 600));
+          matrixRoom = matrixService.getRoom(roomId) as any;
+        }
+      }
       if (!matrixRoom) {
         console.warn("[chat-store] loadRoomMessages: room not found:", roomId);
         return;
