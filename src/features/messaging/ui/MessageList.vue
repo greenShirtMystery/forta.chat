@@ -172,7 +172,7 @@ const handleEmojiSelect = (emoji: string) => {
 const lastReactionEmoji = ref<string | null>(null);
 
 const listRef = ref<HTMLElement>();
-const scrollerRef = ref<{ scrollToBottom: () => void; scrollToIndex: (idx: number, opts?: { align?: "start" | "center" | "end" }) => void; $el: HTMLElement }>();
+const scrollerRef = ref<{ scrollToBottom: () => void; scrollToIndex: (idx: number, opts?: { align?: "start" | "center" | "end" }) => void; getContainerEl: () => HTMLElement | null }>();
 const isNearBottom = ref(true);
 const showScrollFab = ref(false);
 const loading = ref(false);
@@ -266,18 +266,9 @@ const reversedItems = computed(() => {
   return reversed;
 });
 
-/** Get the actual scroll container (scroller's root element).
- *  Vue 3 with <script setup> may return $el as a Ref or HTMLElement —
- *  unwrap defensively. */
+/** Get the actual scroll container element from the scroller component. */
 const getScrollContainer = (): HTMLElement | null => {
-  const raw = scrollerRef.value?.$el;
-  if (raw instanceof HTMLElement) return raw;
-  // $el exposed as Ref<HTMLElement> — unwrap
-  if (raw && typeof raw === "object" && "value" in raw) {
-    const inner = (raw as { value: unknown }).value;
-    if (inner instanceof HTMLElement) return inner;
-  }
-  return listRef.value ?? null;
+  return scrollerRef.value?.getContainerEl?.() ?? listRef.value ?? null;
 };
 
 const readTracker = useReadTracker({
@@ -680,8 +671,7 @@ const updateFloatingDate = () => {
   const scroller = scrollerRef.value;
   if (!scroller) return;
 
-  // The scroller exposes $el which is the scroll container
-  const scrollEl = scroller.$el as HTMLElement;
+  const scrollEl = scroller.getContainerEl?.();
   if (!scrollEl) return;
 
   // Find the first date separator that's visible or just above viewport

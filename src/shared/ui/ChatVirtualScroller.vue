@@ -88,7 +88,9 @@ const scrollToIndex = (index: number, opts?: { align?: "start" | "center" | "end
   }
 };
 
-defineExpose({ scrollToBottom, scrollToIndex });
+/** Expose container element as a getter so the parent always gets the raw HTMLElement. */
+const getContainerEl = () => containerRef.value;
+defineExpose({ scrollToBottom, scrollToIndex, getContainerEl });
 
 // ───────────────── New-message scroll anchoring ─────────────────
 // When a new message arrives at index 0 (visual bottom) while the user
