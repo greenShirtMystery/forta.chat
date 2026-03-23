@@ -215,10 +215,30 @@ interface VirtualItem {
   unreadCount?: number;
 }
 
+// Memoization cache for virtualItems to avoid rebuilding when inputs haven't changed
+let _prevMsgsRef: import("@/entities/chat").Message[] | null = null;
+let _prevTyping: string | null = null;
+let _prevBannerState: { frozenLastReadId: string | null; frozenUnreadCount: number } | null = null;
+let _prevVirtualItems: VirtualItem[] | null = null;
+
 const virtualItems = computed<VirtualItem[]>(() => {
   const msgs = chatStore.activeMessages;
+  const typing = typingText.value;
+  const banner = bannerState.value;
+
+  if (
+    msgs === _prevMsgsRef &&
+    typing === _prevTyping &&
+    _prevBannerState &&
+    banner.frozenLastReadId === _prevBannerState.frozenLastReadId &&
+    banner.frozenUnreadCount === _prevBannerState.frozenUnreadCount &&
+    _prevVirtualItems
+  ) {
+    return _prevVirtualItems;
+  }
+
   const items: VirtualItem[] = [];
-  const { frozenLastReadId, frozenUnreadCount } = bannerState.value;
+  const { frozenLastReadId, frozenUnreadCount } = banner;
 
   for (let i = 0; i < msgs.length; i++) {
     const msg = msgs[i];
@@ -257,10 +277,14 @@ const virtualItems = computed<VirtualItem[]>(() => {
   }
 
   // Typing indicator
-  if (typingText.value) {
+  if (typing) {
     items.push({ id: "typing-indicator", type: "typing" });
   }
 
+  _prevMsgsRef = msgs;
+  _prevTyping = typing;
+  _prevBannerState = { frozenLastReadId, frozenUnreadCount };
+  _prevVirtualItems = items;
   return items;
 });
 
