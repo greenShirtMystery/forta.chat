@@ -865,7 +865,7 @@ export function useMessages() {
   };
 
   const loadMessages = async (roomId: string) => {
-    await chatStore.loadRoomMessages(roomId);
+    await chatStore.loadRoomMessages(roomId, { waitForSdk: true });
   };
 
   /** Set typing indicator */
@@ -931,7 +931,7 @@ export function useMessages() {
       }
     } catch (e) {
       console.error("[Reaction] Failed to toggle reaction:", e);
-      await chatStore.loadRoomMessages(roomId);
+      await chatStore.loadRoomMessages(roomId, { waitForSdk: true });
     }
   };
 
