@@ -109,7 +109,8 @@ const checkAnchor = () => {
     return;
   }
   const st = el.scrollTop;
-  if (st > 50) {
+  // Chrome returns negative scrollTop for column-reverse
+  if (Math.abs(st) > 50) {
     // Find how many new items were prepended at the bottom
     const oldIdx = props.items.findIndex((it) => it.id === prevFirstId);
     if (oldIdx > 0) {
@@ -119,7 +120,8 @@ const checkAnchor = () => {
         const itemEl = el.querySelector(`[data-virtual-id="${CSS.escape(props.items[i].id)}"]`) as HTMLElement | null;
         addedHeight += itemEl?.offsetHeight ?? 80;
       }
-      el.scrollTop = st + addedHeight;
+      // Negative scrollTop: subtract height to move further from bottom
+      el.scrollTop = st - addedHeight;
     }
   }
   prevFirstId = firstId;

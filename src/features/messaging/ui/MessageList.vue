@@ -320,13 +320,14 @@ const handleReturnToLatest = async () => {
 let bannerDismissAllowed = false;
 
 /** Check if user is scrolled near the bottom.
- *  In column-reverse: scrollTop=0 means at the bottom (newest messages). */
+ *  In column-reverse: scrollTop=0 means at the bottom (newest messages).
+ *  Chrome returns negative scrollTop for column-reverse — use abs. */
 const checkScroll = () => {
   const el = getScrollContainer();
   if (!el) return;
-  const { scrollTop } = el;
-  isNearBottom.value = scrollTop < 100;
-  showScrollFab.value = scrollTop > 300;
+  const dist = Math.abs(el.scrollTop);
+  isNearBottom.value = dist < 100;
+  showScrollFab.value = dist > 300;
   if (isNearBottom.value) {
     newMessageCount.value = 0;
     if (hasBanner() && bannerDismissAllowed) dismissBanner();
@@ -811,15 +812,15 @@ const onScrollThrottled = () => {
 
   const container = getScrollContainer();
   if (!container) return;
-  const { scrollTop } = container;
+  // Chrome returns negative scrollTop for column-reverse — normalize to positive
+  const scrollTop = Math.abs(container.scrollTop);
 
   // Calculate scroll velocity (positive = scrolling toward older messages)
-  // In column-reverse: scrollTop increases when scrolling up (toward older)
   const now = performance.now();
   if (lastScrollTime > 0) {
     const dt = (now - lastScrollTime) / 1000;
     if (dt > 0) {
-      scrollVelocity = (scrollTop - lastScrollTop) / dt; // px/s, positive = toward older
+      scrollVelocity = (scrollTop - lastScrollTop) / dt;
     }
   }
   lastScrollTop = scrollTop;
@@ -828,8 +829,7 @@ const onScrollThrottled = () => {
   const roomId = chatStore.activeRoomId;
   if (!roomId) return;
 
-  // Forward pagination in detached mode
-  // In column-reverse: near bottom = scrollTop ≈ 0
+  // Forward pagination in detached mode — near bottom = scrollTop ≈ 0
   if (chatStore.isDetachedFromLatest) {
     if (scrollTop < LOAD_THRESHOLD && !loadingNewer.value) {
       doLoadNewer(roomId);
@@ -838,7 +838,7 @@ const onScrollThrottled = () => {
 
   if (!hasMore.value) return;
 
-  // Distance from the top (oldest messages) = how far scrollTop can still go
+  // Distance from the top (oldest messages)
   const maxScroll = container.scrollHeight - container.clientHeight;
   const distFromTop = maxScroll - scrollTop;
 
@@ -853,7 +853,7 @@ const onScrollThrottled = () => {
     : speed > VELOCITY_BOOST_THRESHOLD ? 2000
     : LOAD_THRESHOLD;
 
-  // Load more when near the top (oldest end) in column-reverse
+  // Load more when near the top (oldest end)
   if (distFromTop < effectiveLoadThreshold && !loadingMore.value) {
     if (import.meta.env.DEV) {
       console.log("[scroll] TRIGGERING doLoadMore distFromTop=%d threshold=%d", distFromTop, effectiveLoadThreshold);
