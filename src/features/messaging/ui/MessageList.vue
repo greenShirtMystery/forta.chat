@@ -768,28 +768,6 @@ const waitForDataChange = (prevLen: number, timeout = 300): Promise<void> =>
     });
   });
 
-/** Wait for scrollHeight to stabilize — Virtua measures new items via ResizeObserver
- *  which fires asynchronously. Poll until 3 consecutive frames have same height. */
-const waitForStableHeight = (el: HTMLElement, maxWait = 500): Promise<void> =>
-  new Promise((resolve) => {
-    let lastHeight = el.scrollHeight;
-    let stableFrames = 0;
-    const start = performance.now();
-    const check = () => {
-      const h = el.scrollHeight;
-      if (h === lastHeight) {
-        stableFrames++;
-        if (stableFrames >= 3) { resolve(); return; }
-      } else {
-        stableFrames = 0;
-        lastHeight = h;
-      }
-      if (performance.now() - start > maxWait) { resolve(); return; }
-      requestAnimationFrame(check);
-    };
-    requestAnimationFrame(check);
-  });
-
 /** Prefetch one batch of 25 messages into Dexie (fire-and-forget).
  *  Called after room load and after each expand to stay one step ahead. */
 const startPrefetch = (roomId: string) => {
@@ -828,8 +806,8 @@ const doLoadMore = async (roomId: string): Promise<void> => {
       networkWaiting.value = false;
     }
 
-    const el = getScrollContainer();
-    if (el) await waitForStableHeight(el);
+    // Wait 2 frames for Virtua to measure new items + ResizeObserver to correct scroll
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
 
     // Step 3: Prefetch next batch so it's ready for the next scroll-up
     if (hasMore.value && chatStore.activeRoomId === roomId) {
@@ -967,6 +945,7 @@ const attachScrollListener = () => {
     // When near bottom, auto-scroll to compensate for layout shifts.
     if (scrollListenEl) {
       prevScrollHeight = scrollListenEl.scrollHeight;
+      let paginationCorrectionRaf: number | null = null;
       contentResizeObserver = new ResizeObserver(() => {
         const el = scrollListenEl;
         if (!el || switching.value) return;
@@ -974,13 +953,21 @@ const attachScrollListener = () => {
         const newHeight = el.scrollHeight;
         if (newHeight === prevScrollHeight) return;
 
-        // During pagination: correct scrollTop immediately on EVERY height change.
-        // ResizeObserver fires before paint, so user never sees the uncorrected frame.
+        // During pagination: batch scroll correction into a single rAF.
+        // Multiple ResizeObserver callbacks fire per frame as Virtua measures
+        // new items — batching prevents layout thrashing from repeated scrollTop writes.
         if (loadingMore.value) {
-          const delta = newHeight - prevScrollHeight;
-          prevScrollHeight = newHeight;
-          if (delta > 0) {
-            el.scrollTop += delta;
+          if (paginationCorrectionRaf === null) {
+            const baseHeight = prevScrollHeight;
+            paginationCorrectionRaf = requestAnimationFrame(() => {
+              paginationCorrectionRaf = null;
+              const finalHeight = el.scrollHeight;
+              const delta = finalHeight - baseHeight;
+              prevScrollHeight = finalHeight;
+              if (delta > 0) {
+                el.scrollTop += delta;
+              }
+            });
           }
           return;
         }
@@ -1286,10 +1273,11 @@ defineExpose({ scrollToMessage, setSearchQuery });
           </span>
         </div>
 
-        <!-- Message -->
+        <!-- Message (v-memo skips re-render when message identity + context unchanged) -->
         <div
           v-else-if="item.type === 'message' && item.message"
           v-track-read
+          v-memo="[item.id, item.message.timestamp, item.message.deleted, item.message.reactions, item.message.status, contextMenu.show && contextMenu.message?.id === item.message.id]"
           :class="[getMsgEnterClass(item.message), { 'context-highlight': contextMenu.show && contextMenu.message?.id === item.message.id }]"
           :style="(item.index ?? 0) > 0 ? { paddingTop: 'var(--message-spacing)' } : {}"
           :data-message-id="item.message.id"
