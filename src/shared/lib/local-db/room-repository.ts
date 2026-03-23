@@ -93,6 +93,9 @@ export class RoomRepository {
       syncedAt?: number;
       updatedAt?: number;
       lastMessageTimestamp?: number;
+      // Cross-device unread reconciliation: server-reported unread count.
+      // If serverUnreadCount is 0 but local Dexie has >0, another device read them.
+      serverUnreadCount?: number;
       // Full insert fields (only for genuinely new rooms)
       unreadCount?: number;
       hasMoreHistory?: boolean;
@@ -152,6 +155,17 @@ export class RoomRepository {
             patched.isDeleted = false;
             patched.deletedAt = null;
             patched.deleteReason = null;
+          }
+
+          // Cross-device unread reconciliation: if server says 0 unread
+          // but local Dexie still has >0, another device read them.
+          if (update.serverUnreadCount === 0 && (prev.unreadCount ?? 0) > 0) {
+            patched.unreadCount = 0;
+            // Advance inbound watermark so future counts are correct
+            const latestTs = prev.lastMessageTimestamp ?? prev.updatedAt ?? 0;
+            if (latestTs > (prev.lastReadInboundTs ?? 0)) {
+              patched.lastReadInboundTs = latestTs;
+            }
           }
 
           toPut.push(patched);

@@ -786,8 +786,8 @@ export const useChatStore = defineStore(NAMESPACE, () => {
 
     // Dual-write: sync room metadata to Dexie in a single transaction.
     // Single transaction = single liveQuery notification (instead of N).
-    // IMPORTANT: Only update metadata fields (name, avatar, members, etc.).
-    // Preview/unread/watermark fields are managed exclusively by EventWriter.
+    // Metadata fields are always updated. Unread/watermark: reconcile via
+    // serverUnreadCount when server says 0 but local >0 (cross-device read sync).
     if (chatDbKitRef.value) {
       const dbKit = chatDbKitRef.value;
       const now = Date.now();
@@ -802,6 +802,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         syncedAt: now,
         updatedAt: r.updatedAt,
         lastMessageTimestamp: r.lastMessage?.timestamp,
+        serverUnreadCount: r.unreadCount, // cross-device unread reconciliation
         // Full insert fields for genuinely new rooms
         unreadCount: r.unreadCount,
         lastMessagePreview: r.lastMessage?.deleted
@@ -1003,7 +1004,8 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       triggerRef(rooms);
     }
 
-    // Dual-write changed rooms to Dexie in a single transaction
+    // Dual-write changed rooms to Dexie in a single transaction.
+    // Includes cross-device unread reconciliation via serverUnreadCount.
     if (chatDbKitRef.value && changed.size > 0) {
       const dbKit = chatDbKitRef.value;
       const now = Date.now();
@@ -1021,6 +1023,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
           syncedAt: now,
           updatedAt: r.updatedAt,
           lastMessageTimestamp: r.lastMessage?.timestamp,
+          serverUnreadCount: r.unreadCount, // cross-device unread reconciliation
           unreadCount: r.unreadCount,
           lastMessagePreview: r.lastMessage?.deleted
             ? "🚫 Message deleted"
@@ -1363,39 +1366,52 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     }
   };
 
-  // Pending read receipt: sent when tab becomes visible
-  let pendingReadReceipt: { roomId: string; event: unknown } | null = null;
+  // Pending read receipts: queued when tab is hidden, sent when visible.
+  // Uses Map to support multiple rooms (previous single-receipt design lost all but last).
+  const pendingReadReceipts = new Map<string, unknown>(); // roomId → Matrix event
 
   // Pending read watermarks: rooms where Dexie was updated but Matrix receipt
-  // could not be sent (event not found in timeline, network error, etc.).
+  // could not be sent (event not found in timeline, HTTP error, tab hidden, etc.).
   // Retried on every sync cycle so the server eventually learns about reads.
   const pendingReadWatermarks = new Map<string, number>();
 
-  const sendReadReceiptIfVisible = (roomId: string, event: unknown) => {
+  /** Send a read receipt if the page is visible, otherwise queue for later.
+   *  Returns true if the receipt was sent successfully. */
+  const sendReadReceiptIfVisible = async (roomId: string, event: unknown): Promise<boolean> => {
     if (document.visibilityState === "visible") {
       try {
         const matrixService = getMatrixClientService();
-        matrixService.sendReadReceipt(event);
+        const success = await matrixService.sendReadReceipt(event);
+        if (!success) {
+          // HTTP error (e.g. 500) — queue the watermark for retry on next sync
+          const ts = (event as any)?.getTs?.() ?? (event as any)?.event?.origin_server_ts ?? 0;
+          if (ts > 0) pendingReadWatermarks.set(roomId, ts);
+        }
+        return success;
       } catch (e) {
         console.warn("[chat-store] sendReadReceipt error:", e);
+        return false;
       }
     } else {
-      pendingReadReceipt = { roomId, event };
+      pendingReadReceipts.set(roomId, event);
+      return false;
     }
   };
 
   // Listen for visibility changes to send pending read receipts
   if (typeof document !== "undefined") {
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible" && pendingReadReceipt) {
-        const { event } = pendingReadReceipt;
-        pendingReadReceipt = null;
-        try {
-          const matrixService = getMatrixClientService();
-          matrixService.sendReadReceipt(event);
-        } catch (e) {
-          console.warn("[chat-store] deferred sendReadReceipt error:", e);
+      if (document.visibilityState === "visible" && pendingReadReceipts.size > 0) {
+        const matrixService = getMatrixClientService();
+        for (const [roomId, event] of pendingReadReceipts) {
+          matrixService.sendReadReceipt(event).then((success) => {
+            if (!success) {
+              const ts = (event as any)?.getTs?.() ?? (event as any)?.event?.origin_server_ts ?? 0;
+              if (ts > 0) pendingReadWatermarks.set(roomId, ts);
+            }
+          }).catch(() => {});
         }
+        pendingReadReceipts.clear();
       }
     });
   }
@@ -1443,8 +1459,12 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     // 2. SERVER SYNC — find event and send receipt
     const event = findMatrixEventForTimestamp(roomId, timestamp);
     if (event) {
-      sendReadReceiptIfVisible(roomId, event);
-      pendingReadWatermarks.delete(roomId);
+      const success = await sendReadReceiptIfVisible(roomId, event);
+      // Only remove from retry queue if server accepted the receipt
+      if (success) {
+        pendingReadWatermarks.delete(roomId);
+      }
+      // If !success, sendReadReceiptIfVisible already queued it in pendingReadWatermarks
     } else {
       // Event not found in timeline — queue for retry on next sync
       pendingReadWatermarks.set(roomId, timestamp);
@@ -1457,8 +1477,9 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     for (const [roomId, timestamp] of pendingReadWatermarks) {
       const event = findMatrixEventForTimestamp(roomId, timestamp);
       if (event) {
-        sendReadReceiptIfVisible(roomId, event);
-        pendingReadWatermarks.delete(roomId);
+        sendReadReceiptIfVisible(roomId, event).then((success) => {
+          if (success) pendingReadWatermarks.delete(roomId);
+        }).catch(() => {});
       }
     }
   };
@@ -3440,7 +3461,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         addMessage(roomId, transferMsg);
         dexieWriteMessage(transferMsg, roomId, raw);
         if (roomId === activeRoomId.value) {
-          sendReadReceiptIfVisible(roomId, event);
+          sendReadReceiptIfVisible(roomId, event).catch(() => {});
         }
         return;
       }
@@ -3488,7 +3509,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
           addMessage(roomId, encTransferMsg);
           dexieWriteMessage(encTransferMsg, roomId, raw);
           if (roomId === activeRoomId.value) {
-            sendReadReceiptIfVisible(roomId, event);
+            sendReadReceiptIfVisible(roomId, event).catch(() => {});
           }
           return;
         } catch { /* not valid transfer JSON, continue as text */ }
@@ -3591,14 +3612,15 @@ export const useChatStore = defineStore(NAMESPACE, () => {
 
       // Auto-send read receipt if this room is currently active (visibility-aware)
       if (roomId === activeRoomId.value) {
-        sendReadReceiptIfVisible(roomId, event);
+        sendReadReceiptIfVisible(roomId, event).catch(() => {});
       }
     } catch (e) {
       console.error("[chat-store] handleTimelineEvent error:", e);
     }
   };
 
-  /** Handle read receipt events from other users */
+  /** Handle read receipt events — both from other users (outbound watermark)
+   *  and from ourselves on another device (inbound watermark / cross-device sync). */
   const handleReceiptEvent = (event: unknown, room: unknown) => {
     try {
       const receiptEvent = event as any;
@@ -3617,8 +3639,6 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         if (!readReceipts) continue;
 
         for (const userId of Object.keys(readReceipts)) {
-          if (userId === myUserId) continue;
-
           // Find the message timestamp for the watermark
           const roomMessages = messages.value[roomId];
           const msg = roomMessages?.find(m => m.id === eventId);
@@ -3626,7 +3646,20 @@ export const useChatStore = defineStore(NAMESPACE, () => {
           const timestamp = msg?.timestamp ?? (receiptData.ts as number) ?? 0;
           if (timestamp === 0) continue;
 
-          // Write watermark to Dexie (single source of truth)
+          if (userId === myUserId) {
+            // Own receipt from another device → advance inbound read watermark.
+            // This is the key cross-device sync path: when desktop reads a message,
+            // mobile receives our own receipt via /sync and clears unread here.
+            if (chatDbKitRef.value) {
+              chatDbKitRef.value.rooms.markAsRead(roomId, timestamp).catch(() => {});
+            }
+            // Also clear in-memory unread for immediate reactivity
+            const inMemRoom = getRoomById(roomId);
+            if (inMemRoom) inMemRoom.unreadCount = 0;
+            continue;
+          }
+
+          // Other user's receipt → advance outbound watermark (they read our messages)
           if (chatDbKitRef.value) {
             chatDbKitRef.value.eventWriter.writeReceipt({
               eventId,
