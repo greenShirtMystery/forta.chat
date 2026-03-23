@@ -603,9 +603,9 @@ watch(
       prevScrollHeight = el?.scrollHeight ?? 0;
       checkScroll();
 
-      // Preload full chat history into Dexie in background.
-      // All subsequent scroll-up reads come from local cache — zero network latency.
-      startHistoryPreload(roomId);
+      // Prefetch first batch of older messages into Dexie so they're
+      // ready when user scrolls up — zero network latency on scroll path.
+      startPrefetch(roomId);
 
       // Allow banner dismissal after user has had time to see it
       setTimeout(() => { bannerDismissAllowed = true; }, 2000);
@@ -790,10 +790,18 @@ const waitForStableHeight = (el: HTMLElement, maxWait = 500): Promise<void> =>
     requestAnimationFrame(check);
   });
 
-/** Expand Dexie window — with full history preloaded, data is always local.
- *  Scroll correction is handled by contentResizeObserver in real-time:
- *  when loadingMore=true, the observer adjusts scrollTop on EVERY height
- *  change (before paint), so the user never sees an uncorrected frame. */
+/** Prefetch one batch of 25 messages into Dexie (fire-and-forget).
+ *  Called after room load and after each expand to stay one step ahead. */
+const startPrefetch = (roomId: string) => {
+  chatStore.prefetchNextBatch(roomId)
+    .then(more => { hasMore.value = more; })
+    .catch(() => {});
+};
+
+/** Expand Dexie window to show more messages on scroll-up.
+ *  Data should already be in Dexie from prefetch. If cache is exhausted,
+ *  falls back to a synchronous network fetch.
+ *  Scroll correction is handled by contentResizeObserver in real-time. */
 const doLoadMore = async (roomId: string): Promise<void> => {
   if (loadingMore.value) return;
   loadingMore.value = true;
@@ -801,16 +809,15 @@ const doLoadMore = async (roomId: string): Promise<void> => {
   try {
     const prevLen = chatStore.activeMessages.length;
 
-    // Expand Dexie query window — instant read from local cache
+    // Step 1: Expand Dexie query window — should find prefetched data
     chatStore.expandMessageWindow();
     await waitForDataChange(prevLen);
 
     if (chatStore.activeRoomId !== roomId) return;
     const newLen = chatStore.activeMessages.length;
 
-    // Safety net: if preload hasn't finished yet and cache is exhausted,
-    // do a single network fetch so the user isn't stuck
-    if (newLen <= prevLen && hasMore.value && !chatStore.historyPreloadActive) {
+    // Step 2: If Dexie had nothing new, fetch from network (safety net)
+    if (newLen <= prevLen && hasMore.value) {
       networkWaiting.value = true;
       const more = await chatStore.loadMoreMessages(roomId);
       hasMore.value = more;
@@ -821,26 +828,18 @@ const doLoadMore = async (roomId: string): Promise<void> => {
       networkWaiting.value = false;
     }
 
-    // If preload is still running and cache ran out, just wait — it'll arrive soon
-    if (newLen <= prevLen && chatStore.historyPreloadActive) {
-      hasMore.value = true; // keep trying on next scroll
-    }
-
     const el = getScrollContainer();
     if (el) await waitForStableHeight(el);
+
+    // Step 3: Prefetch next batch so it's ready for the next scroll-up
+    if (hasMore.value && chatStore.activeRoomId === roomId) {
+      startPrefetch(roomId);
+    }
   } catch {
     networkWaiting.value = false;
   } finally {
     loadingMore.value = false;
   }
-};
-
-/** Kick off full history preload into Dexie (fire-and-forget).
- *  Called once after room load completes. All scroll-up reads then come
- *  purely from local Dexie cache — zero network latency on scroll path. */
-const startHistoryPreload = (roomId: string) => {
-  if (chatStore.historyPreloadActive) return;
-  chatStore.preloadFullHistory(roomId).catch(() => {});
 };
 
 /** Load newer messages (forward pagination in detached mode).

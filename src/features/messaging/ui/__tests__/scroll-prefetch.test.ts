@@ -1,15 +1,15 @@
 import { describe, it, expect } from "vitest";
 
 /**
- * Tests for the scroll-up expand logic from MessageList.vue.
+ * Tests for the Telegram-like scroll architecture in MessageList.vue.
  *
- * Architecture: full chat history is preloaded into Dexie on room enter.
- * Scroll-up simply calls expandMessageWindow() — reads purely from local cache.
- * No network latency on the scroll path.
- *
+ * Pipeline:
  * 1. Display: activeMessages from Dexie liveQuery (limited by messageWindowSize)
- * 2. Cache: ALL messages in Dexie (preloaded by preloadFullHistory on room enter)
- * 3. Network: only used as safety net if preload hasn't finished yet
+ * 2. Cache: messages in Dexie (filled by prefetchNextBatch — one batch ahead)
+ * 3. Network: Matrix scrollback (safety net if prefetch hasn't arrived yet)
+ *
+ * On room enter: prefetch first batch of 25 into Dexie.
+ * On scroll-up: expandMessageWindow() reads from Dexie, then prefetch next batch.
  */
 
 // Constants matching MessageList.vue
@@ -24,7 +24,7 @@ function getEffectiveLoadThreshold(scrollVelocity: number) {
     : LOAD_THRESHOLD;
 }
 
-/** Simulates the scroll handler decision logic */
+/** Simulates the scroll handler expand decision */
 function shouldExpand(opts: {
   scrollTop: number;
   scrollVelocity: number;
@@ -49,7 +49,6 @@ describe("velocity-adaptive load threshold", () => {
   });
 
   it("handles negative velocity (scrolling down)", () => {
-    // Uses abs(velocity), so still gets boosted threshold
     expect(getEffectiveLoadThreshold(-3000)).toBe(2000);
   });
 
@@ -68,7 +67,7 @@ describe("scroll expand decisions", () => {
     })).toBe(true);
   });
 
-  it("does not trigger expand when loadingMore is true", () => {
+  it("does not expand when loadingMore", () => {
     expect(shouldExpand({
       scrollTop: 800,
       scrollVelocity: 500,
@@ -77,7 +76,7 @@ describe("scroll expand decisions", () => {
     })).toBe(false);
   });
 
-  it("triggers nothing when hasMore is false", () => {
+  it("does not expand when no more messages", () => {
     expect(shouldExpand({
       scrollTop: 100,
       scrollVelocity: 2000,
@@ -86,7 +85,7 @@ describe("scroll expand decisions", () => {
     })).toBe(false);
   });
 
-  it("triggers nothing when far from top", () => {
+  it("does not expand when far from top", () => {
     expect(shouldExpand({
       scrollTop: 5000,
       scrollVelocity: 500,
@@ -95,91 +94,72 @@ describe("scroll expand decisions", () => {
     })).toBe(false);
   });
 
-  it("fast scroll expands threshold to catch more", () => {
-    // At normal speed, 2500px does not trigger expand (threshold=1200)
+  it("fast scroll widens threshold", () => {
+    // Normal speed: 2500px does NOT trigger (threshold=1200)
     expect(shouldExpand({
-      scrollTop: 2500,
-      scrollVelocity: 500,
-      loadingMore: false,
-      hasMore: true,
+      scrollTop: 2500, scrollVelocity: 500,
+      loadingMore: false, hasMore: true,
     })).toBe(false);
 
-    // At fast speed, 2500px triggers expand (threshold boosted to 3000)
+    // Fast speed: 2500px DOES trigger (threshold boosted to 3000)
     expect(shouldExpand({
-      scrollTop: 2500,
-      scrollVelocity: 4000,
-      loadingMore: false,
-      hasMore: true,
+      scrollTop: 2500, scrollVelocity: 4000,
+      loadingMore: false, hasMore: true,
     })).toBe(true);
   });
 });
 
-describe("doLoadMore with preloaded history", () => {
-  /** Simulates the doLoadMore decision flow */
+describe("doLoadMore with incremental prefetch", () => {
+  /** Simulates the doLoadMore + prefetch pipeline */
   function simulateDoLoadMore(opts: {
     prevMessageCount: number;
     afterExpandCount: number;
-    historyPreloadActive: boolean;
     hasMore: boolean;
   }) {
     const steps: string[] = [];
 
-    steps.push("expand_window"); // Always start with Dexie expand
+    steps.push("expand_window");
 
-    const newLen = opts.afterExpandCount;
-    if (newLen <= opts.prevMessageCount) {
-      if (opts.hasMore && !opts.historyPreloadActive) {
-        // Preload not running, cache exhausted — safety net network fetch
-        steps.push("network_fetch");
-        steps.push("expand_window_retry");
-      } else if (opts.historyPreloadActive) {
-        // Preload still running — just wait, data will arrive
-        steps.push("wait_for_preload");
-      }
+    if (opts.afterExpandCount <= opts.prevMessageCount && opts.hasMore) {
+      // Prefetch hadn't arrived yet — fall back to network
+      steps.push("network_fetch");
+    }
+
+    // After expand, prefetch next batch for future scroll-up
+    if (opts.hasMore) {
+      steps.push("prefetch_next");
     }
 
     return steps;
   }
 
-  it("only expands when Dexie has preloaded data", () => {
+  it("expand + prefetch when cache has data", () => {
     const steps = simulateDoLoadMore({
       prevMessageCount: 50,
-      afterExpandCount: 100, // Got 50 more from cache
-      historyPreloadActive: false,
+      afterExpandCount: 75, // 25 from prefetch
       hasMore: true,
     });
-    expect(steps).toEqual(["expand_window"]);
-  });
-
-  it("waits for preload when cache temporarily empty but preload running", () => {
-    const steps = simulateDoLoadMore({
-      prevMessageCount: 50,
-      afterExpandCount: 50, // No new messages yet
-      historyPreloadActive: true,
-      hasMore: true,
-    });
-    expect(steps).toContain("wait_for_preload");
+    expect(steps).toEqual(["expand_window", "prefetch_next"]);
     expect(steps).not.toContain("network_fetch");
   });
 
-  it("falls back to network when preload done and cache exhausted", () => {
+  it("falls back to network when cache is empty, then prefetches next", () => {
     const steps = simulateDoLoadMore({
       prevMessageCount: 50,
-      afterExpandCount: 50,
-      historyPreloadActive: false,
+      afterExpandCount: 50, // nothing new
       hasMore: true,
     });
     expect(steps).toContain("network_fetch");
+    expect(steps).toContain("prefetch_next");
   });
 
-  it("does not fetch when at beginning of history", () => {
+  it("no prefetch when at beginning of history", () => {
     const steps = simulateDoLoadMore({
       prevMessageCount: 50,
-      afterExpandCount: 50,
-      historyPreloadActive: false,
+      afterExpandCount: 55,
       hasMore: false,
     });
+    expect(steps).not.toContain("prefetch_next");
     expect(steps).not.toContain("network_fetch");
-    expect(steps).not.toContain("wait_for_preload");
   });
 });
