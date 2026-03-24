@@ -5,11 +5,13 @@
  */
 export function yieldToMain(): Promise<void> {
   // 1. scheduler.yield() — best option (Chrome 115+)
+  const g = globalThis as Record<string, unknown>;
+  const sched = g.scheduler as Record<string, unknown> | undefined;
   if (
-    typeof globalThis.scheduler !== 'undefined' &&
-    typeof globalThis.scheduler.yield === 'function'
+    typeof sched !== 'undefined' &&
+    typeof sched?.yield === 'function'
   ) {
-    return globalThis.scheduler.yield();
+    return (sched.yield as () => Promise<void>)();
   }
 
   // 2. MessageChannel — yields after microtasks but before setTimeout

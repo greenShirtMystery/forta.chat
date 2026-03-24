@@ -29,7 +29,8 @@ function makeItem(roomId = "!room:server", eventId = "evt1"): BufferedWrite {
 }
 
 describe("WriteBuffer", () => {
-  let onFlush: ReturnType<typeof vi.fn>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let onFlush: any;
 
   beforeEach(() => {
     vi.useFakeTimers();
