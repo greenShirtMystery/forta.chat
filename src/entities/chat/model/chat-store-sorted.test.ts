@@ -64,6 +64,32 @@ describe("sortedRooms", () => {
     expect(sorted[1].id).toBe("!b:s");
   });
 
+  describe("empty list guard", () => {
+    let guardStore: ReturnType<typeof useChatStore>;
+
+    beforeEach(() => {
+      setActivePinia(createTestingPinia({ stubActions: false }));
+      guardStore = useChatStore();
+    });
+
+    it("uses in-memory rooms when dexieRooms would be empty", () => {
+      // Simulate: cached rooms loaded into rooms.value
+      guardStore.rooms = [
+        makeRoom({ id: "!a:s", lastMessage: makeMsgField({ timestamp: 200 }) }),
+        makeRoom({ id: "!b:s", lastMessage: makeMsgField({ timestamp: 100 }) }),
+      ];
+      expect(guardStore.sortedRooms).toHaveLength(2);
+      expect(guardStore.sortedRooms[0].id).toBe("!a:s");
+
+      // Replace with different rooms — should still work via fallback
+      guardStore.rooms = [
+        makeRoom({ id: "!c:s", lastMessage: makeMsgField({ timestamp: 300 }) }),
+      ];
+      expect(guardStore.sortedRooms).toHaveLength(1);
+      expect(guardStore.sortedRooms[0].id).toBe("!c:s");
+    });
+  });
+
   it("recomputes synchronously on rooms fallback changes (no throttle)", () => {
     // Verify that rooms (fallback path) changes are always reflected immediately
     store.rooms = [makeRoom({ id: "!a:s", lastMessage: makeMsgField({ timestamp: 100 }) })];

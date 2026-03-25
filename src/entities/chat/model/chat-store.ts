@@ -736,7 +736,13 @@ export const useChatStore = defineStore(NAMESPACE, () => {
   const _recomputeSorted = () => {
     perfCount("sortedRooms:recompute");
     _sortedDirty = false;
-    const dexie = chatDbKitRef.value ? dexieRooms.value : null;
+    let dexie = chatDbKitRef.value ? dexieRooms.value : null;
+    // Guard: if Dexie is initialized but empty while in-memory rooms have data,
+    // use the in-memory fallback. This prevents the "empty list flash" when
+    // chatDbKitRef is set but bulkSyncRooms hasn't populated Dexie yet.
+    if (dexie && dexie.length === 0 && rooms.value.length > 0) {
+      dexie = null;
+    }
     _sortedRoomsRef.value = computeSortedRooms(dexie, rooms.value, pinnedRoomIds.value);
   };
 
