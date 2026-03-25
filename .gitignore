@@ -18,6 +18,7 @@ android/capacitor-filesystem/build/
 *.apk
 *.jks
 *.keystore
+google-services.json
 
 # Vite
 *.local

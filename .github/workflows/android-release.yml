@@ -38,6 +38,10 @@ jobs:
           java-version: '21'
           cache: 'gradle'
 
+      - name: Decode google-services.json
+        run: |
+          echo "${{ secrets.GOOGLE_SERVICES_JSON }}" | base64 -d > android/app/google-services.json
+
       - name: Decode keystore
         run: |
           echo "${{ secrets.ANDROID_KEYSTORE }}" | base64 -d > android/app/release-keystore.jks
@@ -101,6 +105,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Cleanup keystore
+      - name: Cleanup secrets
         if: always()
-        run: rm -f android/app/release-keystore.jks
+        run: |
+          rm -f android/app/release-keystore.jks
+          rm -f android/app/google-services.json
