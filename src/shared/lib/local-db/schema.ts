@@ -68,6 +68,8 @@ export interface LocalRoom {
   } | null;
   /** Transport status of last message (pending/syncing/synced/failed — NOT read/delivered) */
   lastMessageLocalStatus?: LocalMessageStatus;
+  /** Decryption status of last message preview */
+  lastMessageDecryptionStatus?: "pending" | "failed";
 
   // Tombstone (soft-delete for cross-device sync)
   isDeleted: boolean;            // true = user left/was kicked — hidden from UI

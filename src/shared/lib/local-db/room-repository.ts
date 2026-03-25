@@ -195,6 +195,7 @@ export class RoomRepository {
             lastMessageType: update.lastMessageType,
             lastMessageEventId: update.lastMessageEventId,
             lastMessageLocalStatus: update.lastMessageLocalStatus,
+            lastMessageDecryptionStatus: undefined,
             lastMessageReaction: update.lastMessageReaction ?? null,
           };
           toPut.push(newRoom);
@@ -238,6 +239,7 @@ export class RoomRepository {
       updatedAt: Math.max(timestamp, existing?.updatedAt ?? 0),
       // New last message = clear old reaction (no double DB write)
       lastMessageReaction: null,
+      lastMessageDecryptionStatus: undefined,
     };
     if (eventId !== undefined) {
       changes.lastMessageEventId = eventId;
