@@ -930,6 +930,9 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     const prevActiveRoom = activeRoomId.value ? getRoomById(activeRoomId.value) : undefined;
 
     const interactiveRooms = filterInteractiveRooms(matrixRooms);
+    if (import.meta.env.DEV) {
+      console.log(`[perf] fullRoomRefresh: ${interactiveRooms.length} rooms to process`);
+    }
     const prevActiveIsExternal = prevActiveRoom && !interactiveRooms.some((r: any) => (r.roomId as string) === prevActiveRoom.id);
 
     const ROOM_CHUNK = 50;
@@ -955,6 +958,8 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         }
         rooms.value = [...newRooms];
         rebuildRoomsMap();
+        perfMark("fullRoomRefresh-firstChunk");
+        perfMeasure("fullRoomRefresh:firstChunk", "fullRoomRefresh-start", "fullRoomRefresh-firstChunk");
       }
 
       // Yield between chunks (skip after first chunk if that was the only one)
@@ -971,6 +976,9 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       rooms.value = newRooms;
       rebuildRoomsMap();
     }
+
+    perfMark("fullRoomRefresh-allBuilt");
+    perfMeasure("fullRoomRefresh:allBuilt", "fullRoomRefresh-start", "fullRoomRefresh-allBuilt");
 
     // Dual-write: sync room metadata to Dexie in a single transaction.
     // Single transaction = single liveQuery notification (instead of N).
