@@ -903,7 +903,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
   };
 
   /** Full room rebuild — used for initial sync and periodic reconciliation */
-  const fullRoomRefresh = (
+  const fullRoomRefresh = async (
     matrixRooms: any[],
     kit: MatrixKit,
     myUserId: string,
@@ -921,26 +921,45 @@ export const useChatStore = defineStore(NAMESPACE, () => {
 
     const interactiveRooms = filterInteractiveRooms(matrixRooms);
 
-    const newRooms = interactiveRooms
-      .map((r) => {
+    const ROOM_CHUNK = 50;
+    const newRooms: ChatRoom[] = [];
+
+    for (let i = 0; i < interactiveRooms.length; i += ROOM_CHUNK) {
+      const slice = interactiveRooms.slice(i, i + ROOM_CHUNK);
+      for (const r of slice) {
         const room = buildChatRoom(r, kit, myUserId, prevNameMap, prevLastMessageMap);
-        // Preserve cached members if Matrix SDK returned fewer (lazy-load issue)
         const prevMembers = prevMembersMap.get(room.id);
         if (prevMembers && prevMembers.length > room.members.length) {
           room.members = prevMembers;
           const prevAvatar = prevAvatarMap.get(room.id);
           if (prevAvatar) room.avatar = prevAvatar;
         }
-        return room;
-      });
+        newRooms.push(room);
+      }
 
-    // Ensure active room is in the list before assigning (prevents "no chat selected" flash)
-    if (prevActiveRoom && !newRooms.some(r => r.id === prevActiveRoom.id)) {
-      newRooms.push(prevActiveRoom);
+      if (i === 0) {
+        // First chunk — publish immediately for early first-paint
+        if (prevActiveRoom && !newRooms.some(r => r.id === prevActiveRoom.id)) {
+          newRooms.push(prevActiveRoom);
+        }
+        rooms.value = [...newRooms];
+        rebuildRoomsMap();
+      }
+
+      // Yield between chunks (skip after first chunk if that was the only one)
+      if (i + ROOM_CHUNK < interactiveRooms.length) {
+        await yieldToMain();
+      }
     }
 
-    rooms.value = newRooms;
-    rebuildRoomsMap();
+    // Final assignment with the complete list (skip if only one chunk)
+    if (interactiveRooms.length > ROOM_CHUNK) {
+      if (prevActiveRoom && !newRooms.some(r => r.id === prevActiveRoom.id)) {
+        newRooms.push(prevActiveRoom);
+      }
+      rooms.value = newRooms;
+      rebuildRoomsMap();
+    }
 
     // Dual-write: sync room metadata to Dexie in a single transaction.
     // Single transaction = single liveQuery notification (instead of N).
@@ -975,9 +994,20 @@ export const useChatStore = defineStore(NAMESPACE, () => {
           : "synced"
         ) as import("@/shared/lib/local-db").LocalMessageStatus,
       }));
-      dbKit.rooms.bulkSyncRooms(updates).catch(e =>
-        console.warn("[chat-store] Dexie room sync failed:", e)
-      );
+      const DB_CHUNK = 100;
+      (async () => {
+        for (let i = 0; i < updates.length; i += DB_CHUNK) {
+          const chunk = updates.slice(i, i + DB_CHUNK);
+          try {
+            await dbKit.rooms.bulkSyncRooms(chunk);
+          } catch (e) {
+            console.warn("[chat-store] Dexie room sync failed:", e);
+          }
+          if (i + DB_CHUNK < updates.length) {
+            await yieldToMain();
+          }
+        }
+      })();
     }
 
     // Build user display name cache from room members (sync — no API calls)
