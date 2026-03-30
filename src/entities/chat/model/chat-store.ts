@@ -1314,11 +1314,18 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     // Retry previously failed decryptions on full refresh
     decryptFailedRooms.clear();
 
-    // Preserve existing room data — addRoom/addMessage/cache may have set data that Matrix can't resolve yet
-    const prevNameMap = new Map(rooms.value.map(r => [r.id, r.name]));
-    const prevLastMessageMap = new Map(rooms.value.map(r => [r.id, r.lastMessage]));
-    const prevMembersMap = new Map(rooms.value.map(r => [r.id, r.members]));
-    const prevAvatarMap = new Map(rooms.value.map(r => [r.id, r.avatar]));
+    // Preserve existing room data — addRoom/addMessage/cache may have set data that Matrix can't resolve yet.
+    // Single pass instead of 4 × O(n) map() calls — significant at 100k rooms.
+    const prevNameMap = new Map<string, string>();
+    const prevLastMessageMap = new Map<string, Message | undefined>();
+    const prevMembersMap = new Map<string, string[]>();
+    const prevAvatarMap = new Map<string, string>();
+    for (const r of rooms.value) {
+      prevNameMap.set(r.id, r.name);
+      prevLastMessageMap.set(r.id, r.lastMessage);
+      prevMembersMap.set(r.id, r.members);
+      if (r.avatar) prevAvatarMap.set(r.id, r.avatar);
+    }
     const prevActiveRoom = activeRoomId.value ? getRoomById(activeRoomId.value) : undefined;
 
     const interactiveRooms = filterInteractiveRooms(matrixRooms);
@@ -1588,13 +1595,14 @@ export const useChatStore = defineStore(NAMESPACE, () => {
 
     // Rebuild only changed rooms — fetch each individually from SDK
     const changedMatrixRooms: any[] = [];
+    const removedIds = new Set<string>();
     for (const roomId of changed) {
       const matrixRoom = matrixService.getRoom(roomId) as any;
       if (!matrixRoom) {
-        // Room gone from SDK — remove from our list
+        // Room gone from SDK — collect for batch removal
         if (roomsMap.has(roomId)) {
           roomsMap.delete(roomId);
-          rooms.value = rooms.value.filter(r => r.id !== roomId);
+          removedIds.add(roomId);
           removed = true;
         }
         continue;
@@ -1624,6 +1632,11 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         roomsMap.set(roomId, chatRoom);
       }
       changedMatrixRooms.push(matrixRoom);
+    }
+
+    // Batch-remove rooms in single O(n) pass instead of O(n) per room
+    if (removedIds.size > 0) {
+      rooms.value = rooms.value.filter(r => !removedIds.has(r.id));
     }
 
     if (changed.size > 0 || removed) {
