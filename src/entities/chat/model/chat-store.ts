@@ -801,7 +801,8 @@ export const useChatStore = defineStore(NAMESPACE, () => {
   };
 
   const _sortedRoomsRef = shallowRef<ChatRoom[]>([]);
-  let _sortedDirty = false;
+  // Accumulate Dexie delta changes while suppressed, then apply incrementally
+  let _deferredChanges: RoomChange[] = [];
   // Suppress Dexie-triggered recomputes during fullRoomRefresh to avoid
   // intermediate re-sorts while bulkSyncRooms writes are landing.
   let _suppressDexieRecompute = false;
@@ -938,10 +939,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
   };
 
   const applyDexieDeltas = (changes: RoomChange[]) => {
-    if (_suppressDexieRecompute) {
-      _sortedDirty = true;
-      return;
-    }
+    // Always update dexieRoomMap (ground truth), but defer sort when suppressed
     const relevantChanges: RoomChange[] = [];
     for (const c of changes) {
       if (c.type === "delete") {
@@ -962,6 +960,13 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       }
     }
     if (relevantChanges.length === 0) return;
+
+    if (_suppressDexieRecompute) {
+      // Accumulate for deferred application — will be applied incrementally in finally block
+      _deferredChanges.push(...relevantChanges);
+      return;
+    }
+
     dexieRooms.value = Array.from(dexieRoomMap.values());
     if (relevantChanges.length > 100) {
       scheduleFullSortedRebuild();
@@ -970,12 +975,21 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     }
   };
 
-  // Watch for in-memory rooms and pin changes
+  // Before Dexie init: rooms.value is the source of truth → sync fallback sort.
+  // After Dexie init: delta tracking owns _sortedRoomsRef, rooms.value changes are ignored.
+  // pinnedRoomIds changes always trigger rebuild (pin order affects sort).
+  let _prevPinnedRef = pinnedRoomIds.value;
   watch(
     [rooms, pinnedRoomIds],
     () => {
-      if (chatDbKitRef.value && dexieRoomMap.size > 0) {
-        scheduleFullSortedRebuild();
+      const dexieActive = chatDbKitRef.value && dexieRoomMap.size > 0;
+      const pinsChanged = pinnedRoomIds.value !== _prevPinnedRef;
+      _prevPinnedRef = pinnedRoomIds.value;
+
+      if (dexieActive) {
+        // Only rebuild if pinned rooms changed — rooms.value updates are
+        // handled by Dexie delta tracking (observeRoomChanges → patchSortedRooms)
+        if (pinsChanged) scheduleFullSortedRebuild();
       } else {
         _sortedRoomsRef.value = computeSortedRoomsFallback(rooms.value, pinnedRoomIds.value);
       }
@@ -1467,8 +1481,17 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     } finally {
       fullRefreshInFlight = false;
       _suppressDexieRecompute = false;
-      // Single recompute after all writes have landed
-      if (_sortedDirty) scheduleFullSortedRebuild();
+      // Apply accumulated delta changes: incremental patch if few, full rebuild if many
+      if (_deferredChanges.length > 0) {
+        const deferred = _deferredChanges;
+        _deferredChanges = [];
+        dexieRooms.value = Array.from(dexieRoomMap.values());
+        if (deferred.length > 100) {
+          scheduleFullSortedRebuild();
+        } else {
+          patchSortedRooms(deferred);
+        }
+      }
       // Flush any room changes that accumulated while the chunked refresh was running.
       // Without this, changedRoomIds pile up because refreshRoomsImmediate() returns
       // early during fullRefreshInFlight, and no subsequent trigger may arrive to drain them.

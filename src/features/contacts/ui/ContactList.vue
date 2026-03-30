@@ -346,22 +346,39 @@ const allFilteredRooms = computed<UnifiedItem[]>(() => {
   if (props.filter === "groups") return rooms.filter(r => r.isGroup && r.membership !== "invite").map(toItem);
   if (props.filter === "invites") return rooms.filter(r => r.membership === "invite").map(toItem);
 
-  // "all": mix rooms + channels, sorted by time.
-  // Joined rooms sort above invites at the same timestamp to prevent
-  // invite spam from pushing personal chats out of the visible area.
+  // "all": merge-sort rooms + channels (both already sorted by time desc).
+  // O(n+m) instead of O((n+m) log(n+m)).
   const roomItems: UnifiedItem[] = rooms.map(toItem);
-  const channelItems: UnifiedItem[] = channelStore.channels.map(c => ({ ...c, _key: `ch:${c.address}` }));
-  const merged = [...roomItems, ...channelItems];
-  merged.sort((a, b) => {
-    const tsDiff = getItemTimestamp(b) - getItemTimestamp(a);
-    if (tsDiff !== 0) return tsDiff;
-    // Secondary sort: joined > invite > channel (joined rooms first)
-    const membershipRank = (item: ChatRoom | Channel): number => {
-      if (isChannel(item)) return 2;
-      return item.membership === "invite" ? 1 : 0;
-    };
-    return membershipRank(a) - membershipRank(b);
-  });
+  const channelItems: UnifiedItem[] = channelStore.channels
+    .map(c => ({ ...c, _key: `ch:${c.address}` }))
+    .sort((a, b) => getItemTimestamp(b) - getItemTimestamp(a));
+
+  // Membership rank for tie-breaking: joined rooms > invites > channels
+  const membershipRank = (item: ChatRoom | Channel): number => {
+    if (isChannel(item)) return 2;
+    return (item as ChatRoom).membership === "invite" ? 1 : 0;
+  };
+
+  const merged: UnifiedItem[] = [];
+  let ri = 0, ci = 0;
+  while (ri < roomItems.length && ci < channelItems.length) {
+    const rTs = getItemTimestamp(roomItems[ri]);
+    const cTs = getItemTimestamp(channelItems[ci]);
+    if (rTs > cTs) {
+      merged.push(roomItems[ri++]);
+    } else if (cTs > rTs) {
+      merged.push(channelItems[ci++]);
+    } else {
+      // Same timestamp: rooms before channels
+      if (membershipRank(roomItems[ri]) <= membershipRank(channelItems[ci])) {
+        merged.push(roomItems[ri++]);
+      } else {
+        merged.push(channelItems[ci++]);
+      }
+    }
+  }
+  while (ri < roomItems.length) merged.push(roomItems[ri++]);
+  while (ci < channelItems.length) merged.push(channelItems[ci++]);
   return merged;
 });
 
