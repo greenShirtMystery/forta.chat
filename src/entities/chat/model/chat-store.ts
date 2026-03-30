@@ -1442,25 +1442,12 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     const willLoadMembers = !membersLoadedOnce && interactiveRooms.length > 0;
     updateDisplayNames(interactiveRooms, kit, willLoadMembers);
 
-    // Eagerly load profiles for the first viewport of rooms (top ~15)
+    // Load profiles only for the first viewport of rooms (top ~15).
+    // Remaining rooms get profiles on-demand via ContactList.loadVisibleRooms()
+    // when the user scrolls. This avoids ~2000 getUserProfile requests on startup
+    // for accounts with 1000+ rooms.
     const viewportIds = sortedRooms.value.slice(0, 15).map(r => r.id);
     if (viewportIds.length > 0) loadProfilesForRoomIds(viewportIds);
-
-    // Background: load profiles for remaining rooms via idle callbacks
-    // (previously used setTimeout(500) which blocked startup)
-    const remainingIds = sortedRooms.value.slice(15).map(r => r.id);
-    if (remainingIds.length > 0) {
-      const BG_BATCH = 5;
-      const loadNextBatch = (offset: number) => {
-        const batch = remainingIds.slice(offset, offset + BG_BATCH);
-        if (batch.length === 0) return;
-        loadProfilesForRoomIds(batch);
-        if (offset + BG_BATCH < remainingIds.length) {
-          scheduleIdle(() => loadNextBatch(offset + BG_BATCH));
-        }
-      };
-      scheduleIdle(() => loadNextBatch(0), 500);
-    }
 
     // One-time: load members for viewport rooms only (lazy — others load on demand).
     // Previously loaded ALL rooms here, causing N×GET /members requests on startup.

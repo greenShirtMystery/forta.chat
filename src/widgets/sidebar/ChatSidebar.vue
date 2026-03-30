@@ -52,8 +52,9 @@ watch(activeTab, (newVal, oldVal) => {
 });
 
 // Show skeleton until rooms appear from ANY source (Dexie cache or Matrix sync).
-// Don't wait for namesReady — Dexie already stores resolved names from last session,
-// and the sync spinner (ConnectionStatusHeader) indicates ongoing sync.
+// Skeleton is NEVER hidden into a blank screen — it stays until either:
+//   1. sortedRooms.length > 0 (rooms loaded from cache or sync)
+//   2. roomsInitialized && sortedRooms.length === 0 (sync complete, user truly has no rooms)
 const roomsLoading = ref(true);
 
 let stopWatch: ReturnType<typeof watch> | undefined;
@@ -62,12 +63,12 @@ const cancelLoading = () => {
   stopWatch?.();
 };
 stopWatch = watch(
-  () => chatStore.sortedRooms.length,
-  (len) => { if (len > 0) cancelLoading(); },
+  [() => chatStore.sortedRooms.length, () => chatStore.roomsInitialized],
+  ([len, initialized]) => {
+    if (len > 0 || initialized) cancelLoading();
+  },
   { immediate: true },
 );
-// Absolute fallback: 15s (user truly has no chats, or everything failed)
-setTimeout(cancelLoading, 15000);
 
 // Auto-switch away from "invites" tab when no invites remain
 watch(
