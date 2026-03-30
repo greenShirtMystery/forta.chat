@@ -106,7 +106,9 @@ function cachedHexDecode(hex: string): string {
   return result;
 }
 
-/** Resolve member names from userStore — shared between 1:1 and group resolution */
+/** Resolve member names — checks Pocketnet profiles first, then Matrix displaynames.
+ *  Matrix displaynames come from m.room.member state events (free, already in sync)
+ *  and are available instantly without any RPC call. */
 function _resolveMemberNames(room: ChatRoom, allUsers: Record<string, any>, myHexId: string): string[] {
   const otherMembers = room.members.filter(m => m !== myHexId);
 
@@ -114,10 +116,15 @@ function _resolveMemberNames(room: ChatRoom, allUsers: Record<string, any>, myHe
   for (const hexId of otherMembers) {
     const addr = cachedHexDecode(hexId);
     if (/^[A-Za-z0-9]+$/.test(addr)) {
+      // Priority 1: Pocketnet profile (richest data)
       const user = allUsers[addr];
-      // Only use name if it's a real display name, not the raw address
       if (user?.name && !isUnresolvedName(user.name) && user.name !== addr) {
         names.push(user.name); continue;
+      }
+      // Priority 2: Matrix m.room.member displayname (free, from sync)
+      const matrixName = chatStore.getDisplayName(addr);
+      if (matrixName && matrixName !== addr && matrixName !== "?" && !isUnresolvedName(matrixName)) {
+        names.push(matrixName); continue;
       }
     }
   }
@@ -126,7 +133,14 @@ function _resolveMemberNames(room: ChatRoom, allUsers: Record<string, any>, myHe
   if (names.length === 0 && room.avatar?.startsWith("__pocketnet__:")) {
     const avatarAddr = room.avatar.slice("__pocketnet__:".length);
     const user = allUsers[avatarAddr];
-    if (user?.name && !isUnresolvedName(user.name) && user.name !== avatarAddr) names.push(user.name);
+    if (user?.name && !isUnresolvedName(user.name) && user.name !== avatarAddr) {
+      names.push(user.name);
+    } else {
+      const matrixName = chatStore.getDisplayName(avatarAddr);
+      if (matrixName && matrixName !== avatarAddr && matrixName !== "?" && !isUnresolvedName(matrixName)) {
+        names.push(matrixName);
+      }
+    }
   }
 
   return names;
@@ -222,23 +236,45 @@ function isRoomFetchError(roomId: string): boolean {
   return state?.status === "error";
 }
 
-// --- Retry unresolved room names (up to 5 attempts with exponential backoff) ---
+// RecycleScroller ref + item height — needed by both retry watcher and scroll handler
+const scrollerRef = ref<InstanceType<typeof RecycleScroller>>();
+const ITEM_HEIGHT = 68;
+
+// --- Retry unresolved room names (viewport-only, exponential backoff) ---
+// With Matrix displayname fallback, most rooms resolve instantly.
+// Retry only fires for rooms still unresolved AND currently visible.
 let nameRetryCount = 0;
 let nameRetryTimer: ReturnType<typeof setTimeout> | undefined;
-const MAX_NAME_RETRIES = 5;
-const NAME_RETRY_BASE_MS = 2_000; // 2s, 4s, 8s, 16s, 32s
+const MAX_NAME_RETRIES = 3;
+const NAME_RETRY_BASE_MS = 3_000; // 3s, 6s, 12s
+
+/** Get room IDs currently in the viewport (or all if scroller not mounted) */
+const getVisibleRoomIds = (): Set<string> => {
+  const el = scrollerRef.value?.$el as HTMLElement | undefined;
+  if (!el) return new Set();
+  const { scrollTop, clientHeight } = el;
+  const firstIdx = Math.max(0, Math.floor(scrollTop / ITEM_HEIGHT) - 2);
+  const lastIdx = Math.min(
+    filteredRooms.value.length - 1,
+    Math.ceil((scrollTop + clientHeight) / ITEM_HEIGHT) + 4,
+  );
+  const ids = new Set<string>();
+  for (let i = firstIdx; i <= lastIdx; i++) {
+    const item = filteredRooms.value[i];
+    if (item && !isChannel(item)) ids.add((item as ChatRoom).id);
+  }
+  return ids;
+};
 
 watch(unresolvedRoomSet, (set) => {
-  const unresolvedRoomIds = [...set];
-  if (unresolvedRoomIds.length === 0) {
+  if (set.size === 0) {
     nameRetryCount = 0;
     return;
   }
   if (nameRetryCount >= MAX_NAME_RETRIES) {
-    // All retries exhausted — give up, show fallback name instead of infinite skeleton
+    const unresolvedRoomIds = [...set];
     console.warn(
-      `[contact-list] giving up on ${unresolvedRoomIds.length} unresolved rooms after ${MAX_NAME_RETRIES} retries:`,
-      unresolvedRoomIds,
+      `[contact-list] giving up on ${unresolvedRoomIds.length} unresolved rooms after ${MAX_NAME_RETRIES} retries`,
     );
     for (const id of unresolvedRoomIds) gaveUpRooms.value.add(id);
     triggerRef(gaveUpRooms);
@@ -248,9 +284,12 @@ watch(unresolvedRoomSet, (set) => {
   const delay = NAME_RETRY_BASE_MS * Math.pow(2, nameRetryCount);
   nameRetryTimer = setTimeout(() => {
     nameRetryCount++;
-    chatStore.clearProfileCache(unresolvedRoomIds);
-    // Load members from server (resolves 1:1 chat names) then re-fetch profiles
-    chatStore.loadMembersForRooms(unresolvedRoomIds);
+    // Only retry rooms that are currently visible — don't fire /members for off-screen rooms
+    const visible = getVisibleRoomIds();
+    const toRetry = [...set].filter(id => visible.has(id));
+    if (toRetry.length === 0) return;
+    chatStore.clearProfileCache(toRetry);
+    chatStore.loadMembersForRooms(toRetry);
   }, delay);
 }, { immediate: true });
 
@@ -397,8 +436,6 @@ const loadMoreRooms = () => {
   }
 };
 
-const scrollerRef = ref<InstanceType<typeof RecycleScroller>>();
-const ITEM_HEIGHT = 68;
 
 /** Track current viewport generation — incremented on each scroll, previous batch stops. */
 let viewportGeneration = 0;
