@@ -332,6 +332,19 @@ export class RoomRepository {
     });
   }
 
+  /** Bulk-remove rooms and their messages in a single transaction */
+  async bulkRemoveRooms(roomIds: string[]): Promise<void> {
+    if (roomIds.length === 0) return;
+    await this.db.transaction("rw", [this.db.rooms, this.db.messages], async () => {
+      for (const id of roomIds) {
+        await this.db.messages.where("[roomId+timestamp]")
+          .between([id, -Infinity], [id, Infinity])
+          .delete();
+      }
+      await this.db.rooms.bulkDelete(roomIds);
+    });
+  }
+
   // ---------------------------------------------------------------------------
   // Tombstone (soft-delete for cross-device sync)
   // ---------------------------------------------------------------------------

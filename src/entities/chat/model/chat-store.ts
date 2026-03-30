@@ -875,6 +875,42 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     }
   };
 
+  let _cleanupTimer: ReturnType<typeof setTimeout> | null = null;
+  let _cleanupInterval: ReturnType<typeof setInterval> | null = null;
+  const CLEANUP_DELAY_MS = 30_000;
+  const CLEANUP_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
+
+  const runRoomCleanup = async () => {
+    if (!chatDbKitRef.value) return;
+    const matrixService = getMatrixClientService();
+    const { cleanupStaleRooms } = await import("./room-cleanup");
+    await cleanupStaleRooms({
+      getAllRooms: () => chatDbKitRef.value!.rooms.getAllRooms(),
+      deleteRooms: (ids) => chatDbKitRef.value!.rooms.bulkRemoveRooms(ids).catch(() => {}),
+      isRoomInSdk: (id) => !!matrixService.getRoom(id),
+      getRoomHistoryVisibility: (id) => {
+        try {
+          const room = matrixService.getRoom(id) as any;
+          const ev = room?.currentState?.getStateEvents?.("m.room.history_visibility", "");
+          return ev?.getContent?.()?.history_visibility ?? null;
+        } catch { return null; }
+      },
+    });
+  };
+
+  const scheduleRoomCleanup = () => {
+    cancelRoomCleanup();
+    _cleanupTimer = setTimeout(() => {
+      runRoomCleanup();
+      _cleanupInterval = setInterval(runRoomCleanup, CLEANUP_INTERVAL_MS);
+    }, CLEANUP_DELAY_MS);
+  };
+
+  const cancelRoomCleanup = () => {
+    if (_cleanupTimer) { clearTimeout(_cleanupTimer); _cleanupTimer = null; }
+    if (_cleanupInterval) { clearInterval(_cleanupInterval); _cleanupInterval = null; }
+  };
+
   let _fullRebuildTimer: ReturnType<typeof setTimeout> | null = null;
   const scheduleFullSortedRebuild = () => {
     if (_fullRebuildTimer) return;
@@ -960,6 +996,8 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         dexieRoomMap.clear();
         dexieRooms.value = [];
         dexieRoomsReady.value = false;
+        if (_fullRebuildTimer) { clearTimeout(_fullRebuildTimer); _fullRebuildTimer = null; }
+        cancelRoomCleanup();
       }
     },
     { immediate: true },
@@ -1843,29 +1881,8 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       // Delay lets the UI render the room list and decrypt previews first
       setTimeout(() => preloadVisibleRooms(), 500);
 
-      // Schedule room cleanup 30s after init (non-blocking)
-      setTimeout(async () => {
-        if (!chatDbKitRef.value) return;
-        const matrixService = getMatrixClientService();
-
-        const { cleanupStaleRooms } = await import("./room-cleanup");
-        await cleanupStaleRooms({
-          getAllRooms: () => chatDbKitRef.value!.rooms.getAllRooms(),
-          deleteRooms: async (ids) => {
-            for (const id of ids) {
-              await chatDbKitRef.value!.rooms.removeRoom(id).catch(() => {});
-            }
-          },
-          isRoomInSdk: (id) => !!matrixService.getRoom(id),
-          getRoomHistoryVisibility: (id) => {
-            try {
-              const room = matrixService.getRoom(id) as any;
-              const ev = room?.currentState?.getStateEvents?.("m.room.history_visibility", "");
-              return ev?.getContent?.()?.history_visibility ?? null;
-            } catch { return null; }
-          },
-        });
-      }, 30_000);
+      // Schedule room cleanup 30s after init, then every 30 minutes
+      scheduleRoomCleanup();
     }
   };
 
