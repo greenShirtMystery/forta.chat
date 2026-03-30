@@ -54,6 +54,7 @@ export class MatrixClientService {
   private onRedaction: RedactionCallback | null = null;
   private onMyMembership: MyMembershipCallback | null = null;
   private onIncomingCall: IncomingCallCallback | null = null;
+  private onRoom: ((room: unknown) => void) | null = null;
 
   constructor(domain?: string) {
     this.baseUrl = `https://${domain ?? MATRIX_SERVER}`;
@@ -73,6 +74,7 @@ export class MatrixClientService {
     onRedaction?: RedactionCallback;
     onMyMembership?: MyMembershipCallback;
     onIncomingCall?: IncomingCallCallback;
+    onRoom?: (room: unknown) => void;
   }) {
     if (handlers.onSync) this.onSync = handlers.onSync;
     if (handlers.onTimeline) this.onTimeline = handlers.onTimeline;
@@ -82,6 +84,7 @@ export class MatrixClientService {
     if (handlers.onRedaction) this.onRedaction = handlers.onRedaction;
     if (handlers.onMyMembership) this.onMyMembership = handlers.onMyMembership;
     if (handlers.onIncomingCall) this.onIncomingCall = handlers.onIncomingCall;
+    if (handlers.onRoom) this.onRoom = handlers.onRoom;
   }
 
   /** Custom request function using axios (matching bastyon-chat pattern) */
@@ -212,16 +215,61 @@ export class MatrixClientService {
     this.client = userClient;
     this.initEvents();
 
+    // Create a server-side sync filter to reduce /sync payload for large accounts.
+    // This dramatically cuts response size (5-10x) by limiting state events,
+    // excluding ephemeral data, and restricting account_data to essentials.
+    let syncFilter: InstanceType<typeof sdk.Filter> | undefined;
+    try {
+      const filterDefinition = {
+        room: {
+          timeline: {
+            limit: 1,
+            lazy_load_members: true,
+          },
+          state: {
+            lazy_load_members: true,
+            types: [
+              "m.room.name",
+              "m.room.avatar",
+              "m.room.canonical_alias",
+              "m.room.encryption",
+              "m.room.member",
+              "m.room.create",
+              "m.room.topic",
+              "m.room.history_visibility",
+              "m.room.tombstone",
+            ],
+          },
+          ephemeral: {
+            types: [],
+          },
+          account_data: {
+            types: ["m.fully_read", "m.tag"],
+          },
+        },
+        presence: {
+          types: [],
+        },
+        account_data: {
+          types: ["m.fully_read", "m.tag"],
+        },
+      };
+      syncFilter = await userClient.createFilter(filterDefinition);
+    } catch (e) {
+      console.warn("Failed to create sync filter, falling back to unfiltered sync:", e);
+    }
+
     // Sync config: lazy loading for speed, members loaded explicitly when needed
     // initialSyncLimit: 1 keeps sync payload small for accounts with many rooms.
     // Only the last timeline event per room is included; full history is loaded
     // on-demand when a room is opened (loadAllMessages).
     await userClient.startClient({
       pollTimeout: 60000,
-      resolveInvitesToProfiles: true,
+      resolveInvitesToProfiles: false,
       initialSyncLimit: 1,
       disablePresence: true,
       lazyLoadMembers: true,
+      ...(syncFilter ? { filter: syncFilter } : {}),
     });
 
     return userClient;
@@ -331,6 +379,12 @@ export class MatrixClientService {
     // SDK emits "Call.incoming" when it receives m.call.invite (room or to-device)
     this.client.on("Call.incoming" as string, (call: unknown) => {
       this.onIncomingCall?.(call);
+    });
+
+    // Detect new rooms added to the SDK (avoids O(n) scan in incrementalRoomRefresh)
+    this.client.on("Room" as string, (room: unknown) => {
+      if (!this.chatsReady) return;
+      this.onRoom?.(room);
     });
 
     this.client.on("sync", (state: string) => {
@@ -525,6 +579,19 @@ export class MatrixClientService {
       await this.client.scrollback(room, limit);
     } catch (e) {
       console.warn("[matrix-client] scrollback error:", e);
+    }
+  }
+
+  /** Fetch a single event by ID directly from the server.
+   *  Bypasses the sync pipeline — used for push fast-path. */
+  async fetchRoomEvent(roomId: string, eventId: string): Promise<Record<string, unknown> | null> {
+    if (!this.client) return null;
+    try {
+      const event = await this.client.fetchRoomEvent(roomId, eventId);
+      return event as Record<string, unknown>;
+    } catch (e) {
+      console.warn("[matrix-client] fetchRoomEvent error:", e);
+      return null;
     }
   }
 

@@ -347,6 +347,10 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
             chatStore.setTypingUsers(roomId, current.filter((u) => u !== userId));
           }
         },
+        onRoom: (room: unknown) => {
+          const roomId = (room as any)?.roomId as string;
+          if (roomId) chatStore.markRoomChanged(roomId);
+        },
         onIncomingCall: (call: unknown) => {
           try {
             const callService = useCallService();
@@ -424,11 +428,14 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
               return map;
             });
 
-            // Navigate to room when push notification is tapped
+            // Navigate to room when push notification is tapped.
+            // Also kick Matrix sync — WebView may have been suspended in background.
             window.addEventListener('push:openRoom', ((e: CustomEvent) => {
               const roomId = e.detail?.roomId;
               if (roomId) {
                 console.log('[auth] Push tap: navigating to room', roomId);
+                // Kick sync immediately — don't wait for next poll cycle
+                matrixService.client?.retryImmediately();
                 chatStore.setActiveRoom(roomId);
               }
             }) as EventListener);

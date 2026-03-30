@@ -15,11 +15,13 @@
  *   loader.load('addr3');
  */
 
-/** How many addresses to send in one API batch */
-const BATCH_SIZE = 10;
+/** How many addresses to send in one API batch.
+ *  getuserprofile RPC supports up to 70 addresses per call.
+ *  30 balances throughput with responsiveness. */
+const BATCH_SIZE = 30;
 
 /** Pause between batches to yield to the event loop (ms) */
-const YIELD_MS = 150;
+const YIELD_MS = 50;
 
 /** Sentinel value to signal the loadFn to suppress intermediate reactive triggers */
 export const PROFILE_LOADER_BATCH_ACTIVE = { active: false };

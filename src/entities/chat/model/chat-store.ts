@@ -16,6 +16,7 @@ import { isNative } from "@/shared/lib/platform";
 
 
 import type { ChatDbKit, ParsedMessage, LocalRoom } from "@/shared/lib/local-db";
+import type { RoomChange } from "@/shared/lib/local-db";
 import { ChatDatabase, useLiveQuery, localToMessages, localStatusToMessageStatus, deriveOutboundStatus } from "@/shared/lib/local-db";
 import type { ChatRoom, FileInfo, LinkPreview, Message, PollInfo, ReplyTo, TransferInfo } from "./types";
 import { MessageStatus, MessageType } from "./types";
@@ -336,7 +337,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
   const changedRoomIds = new Set<string>();
   let lastSyncState: "PREPARED" | "SYNCING" | null = null;
   let lastFullRefresh = 0;
-  const FULL_REFRESH_INTERVAL = 300_000; // Reconciliation fallback (5 min — incremental is sufficient)
+  const FULL_REFRESH_INTERVAL = 900_000; // 15 min — incremental + delta handles normal updates
   let membersLoadedOnce = false; // One-time member loading for stale lazy-load cache
   let fullRefreshInFlight = false; // Re-entrancy guard for async fullRoomRefresh
 
@@ -598,20 +599,16 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     [] as import("@/shared/lib/local-db").LocalMessage[],
   );
 
-  // Dexie-backed room list (auto-updates on any room table write)
-  const { data: dexieRooms, isReady: dexieRoomsReady } = useLiveQuery(
-    () => {
-      if (!chatDbKitRef.value) return [] as import("@/shared/lib/local-db").LocalRoom[];
-      return chatDbKitRef.value.rooms.getAllRooms();
-    },
-    () => chatDbKitRef.value,
-    [] as import("@/shared/lib/local-db").LocalRoom[],
-  );
+  // Delta-based room tracking: one-time load + incremental updates via Dexie hooks.
+  const dexieRooms = shallowRef<LocalRoom[]>([]);
+  const dexieRoomsReady = ref(false);
+  const dexieRoomMap = new Map<string, LocalRoom>();
+  let dexieChangesUnsub: (() => void) | null = null;
 
   // Outbound watermark for active room — used to derive message statuses
   const activeRoomOutboundWatermark = computed(() => {
     if (!activeRoomId.value) return 0;
-    const lr = dexieRooms.value.find(r => r.id === activeRoomId.value);
+    const lr = dexieRoomMap.get(activeRoomId.value);
     return lr?.lastReadOutboundTs ?? 0;
   });
 
@@ -714,157 +711,320 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     room: ChatRoom;
   }>();
 
-  // Pure sort logic extracted for throttled recomputation
-  const computeSortedRooms = (
-    dexie: LocalRoom[] | null,
-    fallback: ChatRoom[],
-    pinned: ReadonlySet<string>,
-  ): ChatRoom[] => {
-    let source: ChatRoom[];
-    if (dexie) {
-      source = dexie.map(lr => {
-        const ts = lr.lastMessageTimestamp ?? 0;
-        // Resolve effective preview: prefer decrypted cache over raw Dexie value
-        let effectivePreview = lr.lastMessagePreview;
-        if (effectivePreview != null && (effectivePreview === "[encrypted]" || effectivePreview === "m.bad.encrypted" || effectivePreview.startsWith("** Unable to decrypt"))) {
-          const decrypted = decryptedPreviewCache.get(lr.id);
-          if (decrypted) effectivePreview = decrypted;
-        }
-
-        const localStatus = lr.lastMessageLocalStatus;
-        const readOutboundTs = lr.lastReadOutboundTs ?? 0;
-        const lastMsgDecryptionStatus = lr.lastMessageDecryptionStatus;
-        const cached = _chatRoomFromDexieCache.get(lr.id);
-        if (
-          cached &&
-          cached.ts === ts &&
-          cached.unread === lr.unreadCount &&
-          cached.name === lr.name &&
-          cached.membership === lr.membership &&
-          cached.room.avatar === lr.avatar &&
-          cached.preview === effectivePreview &&
-          cached.localStatus === localStatus &&
-          cached.readOutboundTs === readOutboundTs &&
-          cached.lastMsgDecryptionStatus === lastMsgDecryptionStatus
-        ) {
-          return cached.room;
-        }
-        const room: ChatRoom = {
-          id: lr.id,
-          name: lr.name,
-          avatar: lr.avatar,
-          isGroup: lr.isGroup,
-          members: lr.members,
-          membership: lr.membership as "join" | "invite",
-          unreadCount: lr.unreadCount,
-          topic: lr.topic,
-          updatedAt: lr.updatedAt,
-          lastMessage: effectivePreview != null ? {
-            id: "",
-            roomId: lr.id,
-            senderId: lr.lastMessageSenderId ?? "",
-            content: effectivePreview,
-            timestamp: ts,
-            status: deriveOutboundStatus(
-                lr.lastMessageLocalStatus ?? "synced",
-                ts,
-                lr.lastReadOutboundTs ?? 0,
-              ),
-            type: lr.lastMessageType ?? MessageType.text,
-            decryptionStatus: lr.lastMessageDecryptionStatus,
-            callInfo: lr.lastMessageCallInfo,
-            systemMeta: lr.lastMessageSystemMeta,
-          } as Message : undefined,
-          lastMessageReaction: lr.lastMessageReaction ?? undefined,
-        } as ChatRoom;
-        _chatRoomFromDexieCache.set(lr.id, { ts, unread: lr.unreadCount, name: lr.name, membership: lr.membership, preview: effectivePreview, localStatus, readOutboundTs, lastMsgDecryptionStatus, room });
-        return room;
-      });
-
-      // Prune stale cache entries when cache grows beyond 1.5x current room count
-      if (_chatRoomFromDexieCache.size > dexie.length * 1.5) {
-        const activeIds = new Set(dexie.map(lr => lr.id));
-        for (const key of _chatRoomFromDexieCache.keys()) {
-          if (!activeIds.has(key)) _chatRoomFromDexieCache.delete(key);
-        }
-      }
-    } else {
-      source = fallback;
+  // ---------------------------------------------------------------------------
+  // Map a single LocalRoom → ChatRoom (extracted from old computeSortedRooms)
+  // ---------------------------------------------------------------------------
+  const mapLocalRoomToChatRoom = (lr: LocalRoom): ChatRoom => {
+    const ts = lr.lastMessageTimestamp ?? 0;
+    // Resolve effective preview: prefer decrypted cache over raw Dexie value
+    let effectivePreview = lr.lastMessagePreview;
+    if (effectivePreview != null && (effectivePreview === "[encrypted]" || effectivePreview === "m.bad.encrypted" || effectivePreview.startsWith("** Unable to decrypt"))) {
+      const decrypted = decryptedPreviewCache.get(lr.id);
+      if (decrypted) effectivePreview = decrypted;
     }
 
-    return [...source]
-      .sort((a, b) => {
-        const aPinned = pinned.has(a.id) ? 1 : 0;
-        const bPinned = pinned.has(b.id) ? 1 : 0;
-        if (aPinned !== bPinned) return bPinned - aPinned;
-        // Sort all rooms (joined + invited) by effective date, newest first.
-        // Invites use updatedAt (= invite origin_server_ts) as fallback when no messages.
-        const aTime = a.lastMessage?.timestamp || a.updatedAt || 0;
-        const bTime = b.lastMessage?.timestamp || b.updatedAt || 0;
-        return bTime - aTime;
-      });
+    const localStatus = lr.lastMessageLocalStatus;
+    const readOutboundTs = lr.lastReadOutboundTs ?? 0;
+    const lastMsgDecryptionStatus = lr.lastMessageDecryptionStatus;
+    const cached = _chatRoomFromDexieCache.get(lr.id);
+    if (
+      cached &&
+      cached.ts === ts &&
+      cached.unread === lr.unreadCount &&
+      cached.name === lr.name &&
+      cached.membership === lr.membership &&
+      cached.room.avatar === lr.avatar &&
+      cached.preview === effectivePreview &&
+      cached.localStatus === localStatus &&
+      cached.readOutboundTs === readOutboundTs &&
+      cached.lastMsgDecryptionStatus === lastMsgDecryptionStatus
+    ) {
+      return cached.room;
+    }
+    const room: ChatRoom = {
+      id: lr.id,
+      name: lr.name,
+      avatar: lr.avatar,
+      isGroup: lr.isGroup,
+      members: lr.members,
+      membership: lr.membership as "join" | "invite",
+      unreadCount: lr.unreadCount,
+      topic: lr.topic,
+      updatedAt: lr.updatedAt,
+      lastMessage: effectivePreview != null ? {
+        id: "",
+        roomId: lr.id,
+        senderId: lr.lastMessageSenderId ?? "",
+        content: effectivePreview,
+        timestamp: ts,
+        status: deriveOutboundStatus(
+            lr.lastMessageLocalStatus ?? "synced",
+            ts,
+            lr.lastReadOutboundTs ?? 0,
+          ),
+        type: lr.lastMessageType ?? MessageType.text,
+        decryptionStatus: lr.lastMessageDecryptionStatus,
+        callInfo: lr.lastMessageCallInfo,
+        systemMeta: lr.lastMessageSystemMeta,
+      } as Message : undefined,
+      lastMessageReaction: lr.lastMessageReaction ?? undefined,
+    } as ChatRoom;
+    _chatRoomFromDexieCache.set(lr.id, { ts, unread: lr.unreadCount, name: lr.name, membership: lr.membership, preview: effectivePreview, localStatus, readOutboundTs, lastMsgDecryptionStatus, room });
+    return room;
   };
 
-  // Throttled sortedRooms: dexieRooms changes are throttled (max once per 300ms),
-  // while rooms/pinnedRoomIds changes always recompute immediately.
+  // ---------------------------------------------------------------------------
+  // Incremental sort helpers
+  // ---------------------------------------------------------------------------
+
+  const getSortKey = (room: ChatRoom): number =>
+    room.lastMessage?.timestamp || room.updatedAt || 0;
+
+  /** Binary search for insertion in descending-sorted array */
+  const binarySearchDesc = (arr: ChatRoom[], key: number, pinned: ReadonlySet<string>, isPinned: boolean): number => {
+    let lo: number, hi: number;
+    if (isPinned) {
+      lo = 0;
+      hi = 0;
+      while (hi < arr.length && pinned.has(arr[hi].id)) hi++;
+    } else {
+      lo = 0;
+      while (lo < arr.length && pinned.has(arr[lo].id)) lo++;
+      hi = arr.length;
+    }
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (getSortKey(arr[mid]) > key) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  };
+
   const _sortedRoomsRef = shallowRef<ChatRoom[]>([]);
-  let _sortedThrottleTimer: ReturnType<typeof setTimeout> | null = null;
-  let _sortedDirty = false;
+  // Accumulate Dexie delta changes while suppressed, then apply incrementally
+  let _deferredChanges: RoomChange[] = [];
   // Suppress Dexie-triggered recomputes during fullRoomRefresh to avoid
   // intermediate re-sorts while bulkSyncRooms writes are landing.
   let _suppressDexieRecompute = false;
 
-  const _recomputeSorted = () => {
-    perfCount("sortedRooms:recompute");
-    _sortedDirty = false;
-    let dexie = chatDbKitRef.value ? dexieRooms.value : null;
-    // Guard: if Dexie is initialized but empty while in-memory rooms have data,
-    // use the in-memory fallback. This prevents the "empty list flash" when
-    // chatDbKitRef is set but bulkSyncRooms hasn't populated Dexie yet.
-    if (dexie && dexie.length === 0 && rooms.value.length > 0) {
-      dexie = null;
-    }
-    _sortedRoomsRef.value = computeSortedRooms(dexie, rooms.value, pinnedRoomIds.value);
+  const computeSortedRoomsFallback = (source: ChatRoom[], pinned: ReadonlySet<string>): ChatRoom[] => {
+    return [...source].sort((a, b) => {
+      const aPinned = pinned.has(a.id) ? 1 : 0;
+      const bPinned = pinned.has(b.id) ? 1 : 0;
+      if (aPinned !== bPinned) return bPinned - aPinned;
+      return getSortKey(b) - getSortKey(a);
+    });
   };
 
-  // Throttled watch for dexieRooms (high-frequency during sync)
-  watch(
-    () => dexieRooms.value,
-    () => {
-      if (_suppressDexieRecompute) {
-        _sortedDirty = true;
-        return;
-      }
-      if (!_sortedThrottleTimer) {
-        // Leading edge: fire immediately for first paint
-        _recomputeSorted();
-        _sortedThrottleTimer = setTimeout(() => {
-          _sortedThrottleTimer = null;
-          if (_sortedDirty) _recomputeSorted();
-        }, 300);
+  const patchSortedRooms = (changes: RoomChange[]) => {
+    perfCount("sortedRooms:patch");
+    const arr = [..._sortedRoomsRef.value];
+    const pinned = pinnedRoomIds.value;
+    for (const change of changes) {
+      if (change.type === "delete") {
+        const idx = arr.findIndex(r => r.id === change.roomId);
+        if (idx !== -1) arr.splice(idx, 1);
+        _chatRoomFromDexieCache.delete(change.roomId);
       } else {
-        _sortedDirty = true;
+        const chatRoom = mapLocalRoomToChatRoom(change.room);
+        const oldIdx = arr.findIndex(r => r.id === change.room.id);
+        if (oldIdx !== -1) arr.splice(oldIdx, 1);
+        const key = getSortKey(chatRoom);
+        const isPinned = pinned.has(change.room.id);
+        const newIdx = binarySearchDesc(arr, key, pinned, isPinned);
+        arr.splice(newIdx, 0, chatRoom);
       }
-    },
-    { flush: "sync" },
-  );
+    }
+    _sortedRoomsRef.value = arr;
+  };
 
-  // Immediate watch for rooms (fallback) and pinnedRoomIds — always recompute synchronously
+  // ---------------------------------------------------------------------------
+  // Async full rebuild (chunked to avoid blocking event loop on large lists)
+  // ---------------------------------------------------------------------------
+
+  const fullRebuildSortedRoomsAsync = async () => {
+    perfCount("sortedRooms:fullRebuild");
+    const allRooms = Array.from(dexieRoomMap.values());
+    if (allRooms.length === 0 && rooms.value.length > 0) {
+      _sortedRoomsRef.value = computeSortedRoomsFallback(rooms.value, pinnedRoomIds.value);
+      return;
+    }
+    const CHUNK = 5000;
+    const mapped: ChatRoom[] = [];
+    for (let i = 0; i < allRooms.length; i += CHUNK) {
+      const end = Math.min(i + CHUNK, allRooms.length);
+      for (let j = i; j < end; j++) {
+        mapped.push(mapLocalRoomToChatRoom(allRooms[j]));
+      }
+      if (end < allRooms.length) await yieldToMain();
+    }
+    const pinned = pinnedRoomIds.value;
+    mapped.sort((a, b) => {
+      const aPinned = pinned.has(a.id) ? 1 : 0;
+      const bPinned = pinned.has(b.id) ? 1 : 0;
+      if (aPinned !== bPinned) return bPinned - aPinned;
+      return getSortKey(b) - getSortKey(a);
+    });
+    _sortedRoomsRef.value = mapped;
+
+    // Prune stale cache entries when cache grows beyond 1.5x current room count
+    if (_chatRoomFromDexieCache.size > allRooms.length * 1.5) {
+      const activeIds = new Set(allRooms.map(lr => lr.id));
+      for (const key of _chatRoomFromDexieCache.keys()) {
+        if (!activeIds.has(key)) _chatRoomFromDexieCache.delete(key);
+      }
+    }
+  };
+
+  let _cleanupTimer: ReturnType<typeof setTimeout> | null = null;
+  let _cleanupInterval: ReturnType<typeof setInterval> | null = null;
+  const CLEANUP_DELAY_MS = 30_000;
+  const CLEANUP_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
+
+  const runRoomCleanup = async () => {
+    if (!chatDbKitRef.value) return;
+    const matrixService = getMatrixClientService();
+    const { cleanupStaleRooms } = await import("./room-cleanup");
+    await cleanupStaleRooms({
+      getAllRooms: () => chatDbKitRef.value!.rooms.getAllRooms(),
+      deleteRooms: (ids) => chatDbKitRef.value!.rooms.bulkRemoveRooms(ids).catch(() => {}),
+      isRoomInSdk: (id) => !!matrixService.getRoom(id),
+      getRoomHistoryVisibility: (id) => {
+        try {
+          const room = matrixService.getRoom(id) as any;
+          const ev = room?.currentState?.getStateEvents?.("m.room.history_visibility", "");
+          return ev?.getContent?.()?.history_visibility ?? null;
+        } catch { return null; }
+      },
+    });
+  };
+
+  const scheduleRoomCleanup = () => {
+    cancelRoomCleanup();
+    _cleanupTimer = setTimeout(() => {
+      runRoomCleanup();
+      _cleanupInterval = setInterval(runRoomCleanup, CLEANUP_INTERVAL_MS);
+    }, CLEANUP_DELAY_MS);
+  };
+
+  const cancelRoomCleanup = () => {
+    if (_cleanupTimer) { clearTimeout(_cleanupTimer); _cleanupTimer = null; }
+    if (_cleanupInterval) { clearInterval(_cleanupInterval); _cleanupInterval = null; }
+  };
+
+  let _fullRebuildTimer: ReturnType<typeof setTimeout> | null = null;
+  const scheduleFullSortedRebuild = () => {
+    if (_fullRebuildTimer) return;
+    _fullRebuildTimer = setTimeout(() => {
+      _fullRebuildTimer = null;
+      fullRebuildSortedRoomsAsync();
+    }, 50);
+  };
+
+  // ---------------------------------------------------------------------------
+  // Delta-based Dexie room tracking
+  // ---------------------------------------------------------------------------
+
+  /** One-time: load all rooms from Dexie into memory */
+  const initDexieRooms = async (dbKit: ChatDbKit) => {
+    const allRooms = await dbKit.rooms.getAllRooms();
+    dexieRoomMap.clear();
+    for (const r of allRooms) dexieRoomMap.set(r.id, r);
+    dexieRooms.value = allRooms;
+    dexieRoomsReady.value = true;
+    dexieChangesUnsub?.();
+    dexieChangesUnsub = dbKit.rooms.observeRoomChanges((changes) => {
+      applyDexieDeltas(changes);
+    });
+  };
+
+  const applyDexieDeltas = (changes: RoomChange[]) => {
+    // Always update dexieRoomMap (ground truth), but defer sort when suppressed
+    const relevantChanges: RoomChange[] = [];
+    for (const c of changes) {
+      if (c.type === "delete") {
+        if (dexieRoomMap.has(c.roomId)) {
+          dexieRoomMap.delete(c.roomId);
+          relevantChanges.push(c);
+        }
+      } else {
+        const r = c.room;
+        if ((r.membership === "join" || r.membership === "invite") && !r.isDeleted) {
+          if (!r.updatedAt) r.updatedAt = r.lastMessageTimestamp || 1;
+          dexieRoomMap.set(r.id, r);
+          relevantChanges.push(c);
+        } else if (dexieRoomMap.has(r.id)) {
+          dexieRoomMap.delete(r.id);
+          relevantChanges.push({ type: "delete", roomId: r.id });
+        }
+      }
+    }
+    if (relevantChanges.length === 0) return;
+
+    if (_suppressDexieRecompute) {
+      // Accumulate for deferred application — will be applied incrementally in finally block
+      _deferredChanges.push(...relevantChanges);
+      return;
+    }
+
+    dexieRooms.value = Array.from(dexieRoomMap.values());
+    if (relevantChanges.length > 100) {
+      scheduleFullSortedRebuild();
+    } else {
+      patchSortedRooms(relevantChanges);
+    }
+  };
+
+  // Before Dexie init: rooms.value is the source of truth → sync fallback sort.
+  // After Dexie init: delta tracking owns _sortedRoomsRef, rooms.value changes are ignored.
+  // pinnedRoomIds changes always trigger rebuild (pin order affects sort).
+  let _prevPinnedRef = pinnedRoomIds.value;
   watch(
     [rooms, pinnedRoomIds],
     () => {
-      _recomputeSorted();
+      const dexieActive = chatDbKitRef.value && dexieRoomMap.size > 0;
+      const pinsChanged = pinnedRoomIds.value !== _prevPinnedRef;
+      _prevPinnedRef = pinnedRoomIds.value;
+
+      if (dexieActive) {
+        // Only rebuild if pinned rooms changed — rooms.value updates are
+        // handled by Dexie delta tracking (observeRoomChanges → patchSortedRooms)
+        if (pinsChanged) scheduleFullSortedRebuild();
+      } else {
+        _sortedRoomsRef.value = computeSortedRoomsFallback(rooms.value, pinnedRoomIds.value);
+      }
     },
     { immediate: true, flush: "sync" },
+  );
+
+  // Watch for chatDbKit initialization
+  watch(
+    () => chatDbKitRef.value,
+    async (kit) => {
+      if (kit) {
+        await initDexieRooms(kit);
+        await fullRebuildSortedRoomsAsync();
+      } else {
+        dexieChangesUnsub?.();
+        dexieChangesUnsub = null;
+        dexieRoomMap.clear();
+        dexieRooms.value = [];
+        dexieRoomsReady.value = false;
+        if (_fullRebuildTimer) { clearTimeout(_fullRebuildTimer); _fullRebuildTimer = null; }
+        cancelRoomCleanup();
+      }
+    },
+    { immediate: true },
   );
 
   const sortedRooms = computed(() => _sortedRoomsRef.value);
 
   const totalUnread = computed(() => {
-    if (chatDbKitRef.value) {
-      // dexieRooms already excludes tombstoned rooms (getAllRooms filters isDeleted)
-      return dexieRooms.value
-        .reduce((sum, r) => sum + r.unreadCount, 0);
+    if (chatDbKitRef.value && dexieRoomMap.size > 0) {
+      void dexieRooms.value; // register reactive dependency
+      let sum = 0;
+      for (const r of dexieRoomMap.values()) sum += r.unreadCount;
+      return sum;
     }
     return rooms.value.reduce((sum, r) => sum + r.unreadCount, 0);
   });
@@ -1154,11 +1314,18 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     // Retry previously failed decryptions on full refresh
     decryptFailedRooms.clear();
 
-    // Preserve existing room data — addRoom/addMessage/cache may have set data that Matrix can't resolve yet
-    const prevNameMap = new Map(rooms.value.map(r => [r.id, r.name]));
-    const prevLastMessageMap = new Map(rooms.value.map(r => [r.id, r.lastMessage]));
-    const prevMembersMap = new Map(rooms.value.map(r => [r.id, r.members]));
-    const prevAvatarMap = new Map(rooms.value.map(r => [r.id, r.avatar]));
+    // Preserve existing room data — addRoom/addMessage/cache may have set data that Matrix can't resolve yet.
+    // Single pass instead of 4 × O(n) map() calls — significant at 100k rooms.
+    const prevNameMap = new Map<string, string>();
+    const prevLastMessageMap = new Map<string, Message | undefined>();
+    const prevMembersMap = new Map<string, string[]>();
+    const prevAvatarMap = new Map<string, string>();
+    for (const r of rooms.value) {
+      prevNameMap.set(r.id, r.name);
+      prevLastMessageMap.set(r.id, r.lastMessage);
+      prevMembersMap.set(r.id, r.members);
+      if (r.avatar) prevAvatarMap.set(r.id, r.avatar);
+    }
     const prevActiveRoom = activeRoomId.value ? getRoomById(activeRoomId.value) : undefined;
 
     const interactiveRooms = filterInteractiveRooms(matrixRooms);
@@ -1213,7 +1380,27 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       const dexieSourceRooms = prevActiveIsExternal
         ? newRooms.filter(r => r.id !== prevActiveRoom!.id)
         : newRooms;
-      const updates = dexieSourceRooms.map(r => ({
+
+      // OPTIMIZATION: Only write rooms with display-relevant changes to Dexie
+      const changedForDexie: ChatRoom[] = [];
+      for (const r of dexieSourceRooms) {
+        const prev = dexieRoomMap.get(r.id);
+        if (!prev
+          || prev.name !== r.name
+          || prev.unreadCount !== r.unreadCount
+          || (r.lastMessage?.timestamp ?? 0) !== (prev.lastMessageTimestamp ?? 0)
+          || prev.membership !== (r.membership ?? "join")
+          || prev.avatar !== r.avatar
+        ) {
+          changedForDexie.push(r);
+        }
+      }
+
+      if (import.meta.env.DEV) {
+        console.log(`[perf] fullRoomRefresh: ${dexieSourceRooms.length} total, ${changedForDexie.length} changed, ${dexieSourceRooms.length - changedForDexie.length} skipped`);
+      }
+
+      const updates = changedForDexie.map(r => ({
         id: r.id,
         name: r.name,
         avatar: r.avatar,
@@ -1262,25 +1449,12 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     const willLoadMembers = !membersLoadedOnce && interactiveRooms.length > 0;
     updateDisplayNames(interactiveRooms, kit, willLoadMembers);
 
-    // Eagerly load profiles for the first viewport of rooms (top ~15)
+    // Load profiles only for the first viewport of rooms (top ~15).
+    // Remaining rooms get profiles on-demand via ContactList.loadVisibleRooms()
+    // when the user scrolls. This avoids ~2000 getUserProfile requests on startup
+    // for accounts with 1000+ rooms.
     const viewportIds = sortedRooms.value.slice(0, 15).map(r => r.id);
     if (viewportIds.length > 0) loadProfilesForRoomIds(viewportIds);
-
-    // Background: load profiles for remaining rooms via idle callbacks
-    // (previously used setTimeout(500) which blocked startup)
-    const remainingIds = sortedRooms.value.slice(15).map(r => r.id);
-    if (remainingIds.length > 0) {
-      const BG_BATCH = 5;
-      const loadNextBatch = (offset: number) => {
-        const batch = remainingIds.slice(offset, offset + BG_BATCH);
-        if (batch.length === 0) return;
-        loadProfilesForRoomIds(batch);
-        if (offset + BG_BATCH < remainingIds.length) {
-          scheduleIdle(() => loadNextBatch(offset + BG_BATCH));
-        }
-      };
-      scheduleIdle(() => loadNextBatch(0), 500);
-    }
 
     // One-time: load members for viewport rooms only (lazy — others load on demand).
     // Previously loaded ALL rooms here, causing N×GET /members requests on startup.
@@ -1301,8 +1475,17 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     } finally {
       fullRefreshInFlight = false;
       _suppressDexieRecompute = false;
-      // Single recompute after all writes have landed
-      if (_sortedDirty) _recomputeSorted();
+      // Apply accumulated delta changes: incremental patch if few, full rebuild if many
+      if (_deferredChanges.length > 0) {
+        const deferred = _deferredChanges;
+        _deferredChanges = [];
+        dexieRooms.value = Array.from(dexieRoomMap.values());
+        if (deferred.length > 100) {
+          scheduleFullSortedRebuild();
+        } else {
+          patchSortedRooms(deferred);
+        }
+      }
       // Flush any room changes that accumulated while the chunked refresh was running.
       // Without this, changedRoomIds pile up because refreshRoomsImmediate() returns
       // early during fullRefreshInFlight, and no subsequent trigger may arrive to drain them.
@@ -1400,38 +1583,30 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     namesReady.value = true;
   };
 
-  /** Incremental room refresh — only processes changed rooms */
+  /** Incremental room refresh — only processes changed rooms.
+   *  Fetches individual rooms by ID from SDK instead of scanning all rooms (O(changed) not O(n)). */
   const incrementalRoomRefresh = (
-    matrixRooms: any[],
     kit: MatrixKit,
     myUserId: string,
     changed: Set<string>,
   ) => {
-    const matrixRoomMap = new Map<string, any>();
-    for (const mr of matrixRooms) matrixRoomMap.set(mr.roomId as string, mr);
-
-    // Detect new rooms (not in our map yet)
-    for (const mr of matrixRooms) {
-      if (!roomsMap.has(mr.roomId as string)) changed.add(mr.roomId as string);
-    }
-
-    // Remove rooms that no longer exist in Matrix
-    const matrixRoomIds = new Set(matrixRooms.map((r: any) => r.roomId as string));
+    const matrixService = getMatrixClientService();
     let removed = false;
-    rooms.value = rooms.value.filter(r => {
-      if (!matrixRoomIds.has(r.id)) {
-        roomsMap.delete(r.id);
-        removed = true;
-        return false;
-      }
-      return true;
-    });
 
-    // Rebuild only changed rooms
+    // Rebuild only changed rooms — fetch each individually from SDK
     const changedMatrixRooms: any[] = [];
+    const removedIds = new Set<string>();
     for (const roomId of changed) {
-      const matrixRoom = matrixRoomMap.get(roomId);
-      if (!matrixRoom) continue;
+      const matrixRoom = matrixService.getRoom(roomId) as any;
+      if (!matrixRoom) {
+        // Room gone from SDK — collect for batch removal
+        if (roomsMap.has(roomId)) {
+          roomsMap.delete(roomId);
+          removedIds.add(roomId);
+          removed = true;
+        }
+        continue;
+      }
 
       // Check this room is still interactive
       const membership = matrixRoom.selfMembership ?? matrixRoom.getMyMembership?.();
@@ -1457,6 +1632,11 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         roomsMap.set(roomId, chatRoom);
       }
       changedMatrixRooms.push(matrixRoom);
+    }
+
+    // Batch-remove rooms in single O(n) pass instead of O(n) per room
+    if (removedIds.size > 0) {
+      rooms.value = rooms.value.filter(r => !removedIds.has(r.id));
     }
 
     if (changed.size > 0 || removed) {
@@ -1699,8 +1879,6 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     if (fullRefreshInFlight) return;
 
     const myUserId = matrixService.getUserId() ?? "";
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const matrixRooms = matrixService.getRooms() as any[];
 
     // Determine if we need a full rebuild or incremental update
     const isInitial = lastSyncState === "PREPARED" || !roomsInitialized.value;
@@ -1710,9 +1888,13 @@ export const useChatStore = defineStore(NAMESPACE, () => {
 
     if (isInitial || forceFullRefresh) {
       lastFullRefresh = Date.now();
+      // Full refresh needs all rooms from SDK
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const matrixRooms = matrixService.getRooms() as any[];
       fullRoomRefresh(matrixRooms, kit, myUserId);
     } else {
-      incrementalRoomRefresh(matrixRooms, kit, myUserId, changed);
+      // Incremental: only process changed room IDs, don't scan all rooms
+      incrementalRoomRefresh(kit, myUserId, changed);
     }
 
     // Mark rooms as initialized (first sync-based refresh complete)
@@ -1721,6 +1903,9 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       // Start background preloading after rooms are built
       // Delay lets the UI render the room list and decrypt previews first
       setTimeout(() => preloadVisibleRooms(), 500);
+
+      // Schedule room cleanup 30s after init, then every 30 minutes
+      scheduleRoomCleanup();
     }
   };
 
@@ -1881,12 +2066,26 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     });
   }
 
-  // Capacitor native: flush pending receipts when app returns to foreground.
+  // Capacitor native: resume sync + flush receipts when app returns to foreground.
   // visibilitychange is unreliable in WebView — use Capacitor's appStateChange instead.
+  // Without this, WebView suspension causes up to 60s delay before new messages appear.
   if (isNative) {
     import("@capacitor/app").then(({ App }) => {
       App.addListener("appStateChange", ({ isActive }) => {
         if (isActive) {
+          // 1. Kick Matrix sync — WebView suspension aborts the pending /sync long-poll,
+          //    leaving the SDK in backoff. retryImmediately() bypasses backoff delay.
+          try {
+            const matrixService = getMatrixClientService();
+            if (matrixService.client) {
+              matrixService.client.retryImmediately();
+            }
+          } catch { /* matrix not ready yet */ }
+
+          // 2. Process any room changes that accumulated during background
+          refreshRooms();
+
+          // 3. Flush pending read receipts
           flushPendingReadWatermarks();
         }
       });
