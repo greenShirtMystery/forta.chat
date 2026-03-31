@@ -497,9 +497,16 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
 
   /** Verify user has 12 published encryption keys; re-publish if missing.
    *  Called on every login to catch users stuck in broken state.
-   *  Uses blockchain RPC (not local SDK cache) to avoid false negatives. */
+   *  Uses blockchain RPC (not local SDK cache) to avoid false negatives.
+   *  Skips if registration is already in progress (register() handles it). */
   const verifyAndRepublishKeys = async () => {
     if (!address.value || !privateKey.value) return;
+
+    // Don't interfere with active registration — register() manages its own poll
+    if (registrationPending.value || pendingRegProfile.value) {
+      console.log("[auth] Key verification skipped — registration in progress");
+      return;
+    }
 
     // Step 1: Quick check via local SDK cache
     const userData = appInitializer.getUserData(address.value);
