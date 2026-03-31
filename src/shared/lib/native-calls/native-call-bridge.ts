@@ -69,6 +69,12 @@ class NativeCallBridge {
       console.log('[NativeCallBridge] Native UI hangup');
       this.callService?.hangup();
     });
+
+    // Native CallActivity video toggle → SDK renegotiation
+    await NativeWebRTC.addListener('onNativeVideoToggle', ({ enabled }) => {
+      console.log('[NativeCallBridge] Native video toggle:', enabled);
+      this.callService?.setLocalVideoMuted(!enabled);
+    });
   }
 
   async reportIncomingCall(options: {

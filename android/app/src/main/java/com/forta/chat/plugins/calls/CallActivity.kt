@@ -49,6 +49,7 @@ class CallActivity : Activity(), SensorEventListener {
     companion object {
         private const val TAG = "CallActivity"
         private const val CONTROLS_HIDE_DELAY_MS = 5000L
+        private const val REQUEST_CAMERA_PERMISSION = 1002
 
         const val EXTRA_CALLER_NAME = "callerName"
         const val EXTRA_CALL_TYPE = "callType"
@@ -63,6 +64,15 @@ class CallActivity : Activity(), SensorEventListener {
 
         // Static callback for native hangup button
         var onNativeHangup: (() -> Unit)? = null
+
+        // Static callback for remote video received
+        var onRemoteVideo: (() -> Unit)? = null
+
+        // Static callback for native video toggle (needs JS renegotiation)
+        var onNativeVideoToggle: ((Boolean) -> Unit)? = null
+
+        // Static callback for remote video mute state changes
+        var onRemoteVideoMuted: ((Boolean) -> Unit)? = null
 
         fun launch(context: Context, callerName: String, callType: String, callId: String, direction: String) {
             val intent = Intent(context, CallActivity::class.java).apply {
@@ -97,11 +107,14 @@ class CallActivity : Activity(), SensorEventListener {
     private var avatarText: TextView? = null
     private var flipContainer: View? = null
     private var pulseAnimator: AnimatorSet? = null
+    private var remoteNoVideo: View? = null
+    private var remoteAvatarText: TextView? = null
 
     // State
     private var isMuted = false
     private var isVideoEnabled = true
     private var callType = "video"
+    private var callerName = "Unknown"
     private var callDurationSeconds = 0
     private var isConnected = false
 
@@ -151,19 +164,22 @@ class CallActivity : Activity(), SensorEventListener {
             )
         }
 
+        // Translucent window allows SurfaceView surfaces to be visible behind the window
+        window.setFormat(android.graphics.PixelFormat.TRANSLUCENT)
+
         setContentView(R.layout.activity_call)
         bindViews()
         setupListeners()
 
         // Read extras
-        val callerName = intent.getStringExtra(EXTRA_CALLER_NAME) ?: "Unknown"
+        callerName = intent.getStringExtra(EXTRA_CALLER_NAME) ?: "Unknown"
         callType = intent.getStringExtra(EXTRA_CALL_TYPE) ?: "video"
         isVideoEnabled = callType == "video"
 
         callerNameText.text = callerName
         callStatusText.text = "Connecting..."
 
-        // Voice mode setup
+        // Mode setup
         if (callType == "voice") {
             voiceBg?.visibility = View.VISIBLE
             voiceCenter?.visibility = View.VISIBLE
@@ -171,6 +187,13 @@ class CallActivity : Activity(), SensorEventListener {
             localVideoView.visibility = View.GONE
             flipContainer?.visibility = View.GONE
             avatarText?.text = callerName.take(2).uppercase()
+            startPulseAnimation()
+        } else {
+            // Video call: show voice mode UI until remote video arrives
+            voiceBg?.visibility = View.VISIBLE
+            voiceCenter?.visibility = View.VISIBLE
+            avatarText?.text = callerName.take(2).uppercase()
+            remoteVideoView.visibility = View.GONE
             startPulseAnimation()
         }
 
@@ -196,11 +219,22 @@ class CallActivity : Activity(), SensorEventListener {
             )
         }
 
+        // Always init renderers (remote video needed for all call types)
         initVideoRenderers()
+
+        // Request camera permission if needed for video calls
+        if (isVideoEnabled && checkSelfPermission(android.Manifest.permission.CAMERA)
+            != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(android.Manifest.permission.CAMERA), REQUEST_CAMERA_PERMISSION)
+        }
         updateButtonStates()
 
         // Register for call end
         onCallEnded = { runOnUiThread { finish() } }
+        // Register for remote video
+        onRemoteVideo = { runOnUiThread { onRemoteVideoReceived() } }
+        // Register for remote video mute state
+        onRemoteVideoMuted = { muted -> runOnUiThread { onRemoteVideoMuteChanged(muted) } }
         // Register for call connected
         onCallConnected = { runOnUiThread { handleCallConnected() } }
 
@@ -227,12 +261,29 @@ class CallActivity : Activity(), SensorEventListener {
         super.onPause()
     }
 
+    override fun onRequestPermissionsResult(
+        requestCode: Int, permissions: Array<out String>, grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_CAMERA_PERMISSION &&
+            grantResults.isNotEmpty() &&
+            grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            // Camera permission granted — start local video
+            val mgr = WebRTCPlugin.manager ?: return
+            mgr.startLocalVideo("", localVideoView)
+            localVideoView.visibility = View.VISIBLE
+            setupLocalVideoDrag()
+        }
+    }
+
     override fun onDestroy() {
         handler.removeCallbacks(timerRunnable)
         handler.removeCallbacks(hideControlsRunnable)
         pulseAnimator?.cancel()
         onCallEnded = null
         onCallConnected = null
+        onRemoteVideo = null
+        onRemoteVideoMuted = null
         // Note: onNativeHangup is wired by WebRTCPlugin.load() and stays alive
 
         try {
@@ -267,6 +318,8 @@ class CallActivity : Activity(), SensorEventListener {
         voiceCenter = findViewById(R.id.voice_center)
         avatarText = findViewById(R.id.avatar_text)
         flipContainer = findViewById(R.id.flip_container)
+        remoteNoVideo = findViewById(R.id.remote_no_video)
+        remoteAvatarText = findViewById(R.id.remote_avatar_text)
     }
 
     private fun setupListeners() {
@@ -280,26 +333,50 @@ class CallActivity : Activity(), SensorEventListener {
         remoteVideoView.setOnClickListener { toggleControlsVisibility() }
     }
 
+    private var renderersInitialized = false
+
     private fun initVideoRenderers() {
-        val mgr = WebRTCPlugin.manager ?: return
-        val eglBase = mgr.getEglBase() ?: return
+        val mgr = WebRTCPlugin.manager ?: run {
+            Log.w(TAG, "initVideoRenderers: manager is null!")
+            return
+        }
+        val eglBase = mgr.getEglBase() ?: run {
+            Log.w(TAG, "initVideoRenderers: eglBase is null!")
+            return
+        }
 
-        remoteVideoView.init(eglBase.eglBaseContext, null)
-        remoteVideoView.setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
-        remoteVideoView.setEnableHardwareScaler(true)
-        remoteVideoView.setMirror(false)
+        if (!renderersInitialized) {
+            Log.d(TAG, "initVideoRenderers: initializing, remoteView visible=${remoteVideoView.visibility == View.VISIBLE}")
 
-        localVideoView.init(eglBase.eglBaseContext, null)
-        localVideoView.setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
-        localVideoView.setEnableHardwareScaler(true)
-        localVideoView.setMirror(true)
-        localVideoView.setZOrderMediaOverlay(true)
+            remoteVideoView.init(eglBase.eglBaseContext, null)
+            remoteVideoView.setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
+            remoteVideoView.setEnableHardwareScaler(true)
+            remoteVideoView.setMirror(false)
 
-        // Attach local video only for video calls
-        if (isVideoEnabled) {
+            localVideoView.init(eglBase.eglBaseContext, null)
+            localVideoView.setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
+            localVideoView.setEnableHardwareScaler(true)
+            localVideoView.setMirror(true)
+            localVideoView.setZOrderMediaOverlay(true)
+
+            // Attach remote renderer (may already have tracks from WebRTC negotiation)
+            mgr.attachRemoteRenderer(remoteVideoView)
+            renderersInitialized = true
+
+            // Check if remote video tracks already exist — hide placeholder if so
+            if (mgr.hasRemoteVideoTracks()) {
+                remoteNoVideo?.visibility = View.GONE
+                remoteVideoView.visibility = View.VISIBLE
+            }
+            Log.d(TAG, "initVideoRenderers: renderers initialized, remote renderer attached")
+        }
+
+        // Attach local video only for video calls with camera permission
+        if (isVideoEnabled && checkSelfPermission(android.Manifest.permission.CAMERA)
+            == android.content.pm.PackageManager.PERMISSION_GRANTED) {
             mgr.startLocalVideo("", localVideoView)
             setupLocalVideoDrag()
-        } else {
+        } else if (!isVideoEnabled) {
             localVideoView.visibility = View.GONE
         }
     }
@@ -359,9 +436,33 @@ class CallActivity : Activity(), SensorEventListener {
         }
     }
 
-    fun attachRemoteVideoTrack(track: VideoTrack) {
+    fun onRemoteVideoReceived() {
         runOnUiThread {
-            track.addSink(remoteVideoView)
+            remoteNoVideo?.visibility = View.GONE
+            remoteVideoView.visibility = View.VISIBLE
+            // Hide voice mode UI when remote video arrives
+            voiceBg?.visibility = View.GONE
+            voiceCenter?.visibility = View.GONE
+            pulseAnimator?.cancel()
+        }
+    }
+
+    private fun onRemoteVideoMuteChanged(muted: Boolean) {
+        if (muted) {
+            // Show voice mode UI (same as voice call)
+            remoteNoVideo?.visibility = View.GONE
+            remoteVideoView.visibility = View.GONE
+            voiceBg?.visibility = View.VISIBLE
+            voiceCenter?.visibility = View.VISIBLE
+            avatarText?.text = callerName.take(2).uppercase()
+            startPulseAnimation()
+        } else {
+            // Show remote video
+            remoteNoVideo?.visibility = View.GONE
+            remoteVideoView.visibility = View.VISIBLE
+            voiceBg?.visibility = View.GONE
+            voiceCenter?.visibility = View.GONE
+            pulseAnimator?.cancel()
         }
     }
 
@@ -376,10 +477,36 @@ class CallActivity : Activity(), SensorEventListener {
     }
 
     private fun toggleVideo() {
+        if (!isVideoEnabled && checkSelfPermission(android.Manifest.permission.CAMERA)
+            != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(android.Manifest.permission.CAMERA), REQUEST_CAMERA_PERMISSION)
+            return
+        }
         isVideoEnabled = !isVideoEnabled
-        WebRTCPlugin.manager?.setVideoEnabled(isVideoEnabled)
-        localVideoView.visibility = if (isVideoEnabled) View.VISIBLE else View.GONE
+        val mgr = WebRTCPlugin.manager
+        mgr?.setVideoEnabled(isVideoEnabled)
+        if (isVideoEnabled) {
+            // Switch from voice to video mode
+            voiceBg?.visibility = View.GONE
+            voiceCenter?.visibility = View.GONE
+            pulseAnimator?.cancel()
+            remoteVideoView.visibility = View.VISIBLE
+            localVideoView.visibility = View.VISIBLE
+            flipContainer?.visibility = View.VISIBLE
+
+            // Ensure renderers are initialized
+            initVideoRenderers()
+            mgr?.startLocalVideo("", localVideoView)
+            setupLocalVideoDrag()
+        } else {
+            // Switch from video to voice mode
+            localVideoView.visibility = View.GONE
+            flipContainer?.visibility = View.GONE
+        }
         updateButtonStates()
+
+        // Notify JS for SDP renegotiation (mid-call video toggle)
+        onNativeVideoToggle?.invoke(isVideoEnabled)
     }
 
     private fun flipCamera() {
