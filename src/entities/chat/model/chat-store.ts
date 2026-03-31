@@ -2372,11 +2372,15 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       }
       await matrixService.joinRoom(roomId);
 
-      // Update local membership to "join"
+      // Update local membership to "join" and trigger Vue reactivity.
+      // rooms is a shallowRef — property mutations don't trigger dependents,
+      // so we must call triggerRef to notify computed props (e.g. isInvite).
       const room = getRoomById(roomId);
       if (room) room.membership = "join";
+      triggerRef(rooms);
 
-      // Refresh to get full room data now that we're a member
+      // Mark room as changed so the debounced refresh picks it up for Dexie sync
+      markRoomChanged(roomId);
       refreshRooms();
 
       // Force reload active room data — activeRoomId didn't change so watchers
