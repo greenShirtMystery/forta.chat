@@ -125,7 +125,7 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
   const { setLSValue: setLSRegPending, value: LSRegPending } =
     useLocalStorage<boolean>("registration_pending", false);
   const registrationPending = ref(LSRegPending);
-  let registrationPollTimer: ReturnType<typeof setInterval> | null = null;
+  let registrationPollTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Pending registration profile: stored until PKOIN arrives and UserInfo is broadcast
   type PendingRegProfile = { name: string; language: string; about: string; image?: string; encPublicKeys: string[] };
@@ -656,20 +656,23 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
     setLSRegPending(val);
   };
 
-  /** Poll blockchain every 10s. Two phases:
+  /** Poll blockchain with exponential backoff. Two phases:
    *  Phase 1: Wait for PKOIN (unspents) to arrive, then broadcast UserInfo.
-   *  Phase 2: Wait for UserInfo to be confirmed on-chain (getuserstate + Actions status). */
+   *  Phase 2: Wait for UserInfo to be confirmed on-chain (getuserstate + Actions status).
+   *  NO TIMEOUT — polls indefinitely until confirmed or user logs out. */
   const startRegistrationPoll = () => {
-    if (registrationPollTimer) clearInterval(registrationPollTimer);
-    const startTime = Date.now();
-    const MAX_WAIT_MS = 5 * 60 * 1000; // 5 minutes fallback
+    if (registrationPollTimer) clearTimeout(registrationPollTimer);
+    let pollInterval = 3000;
+    const MAX_POLL_INTERVAL = 60000;
+    let attempt = 0;
     console.log("[auth] Starting registration poll (phase:", pendingRegProfile.value ? "1-broadcast" : "2-confirm", ")");
 
-    registrationPollTimer = setInterval(async () => {
+    const poll = async () => {
       if (!address.value) {
         stopRegistrationPoll();
         return;
       }
+      attempt++;
       try {
         // Phase 1: Broadcast UserInfo once PKOIN arrives
         if (pendingRegProfile.value) {
@@ -678,23 +681,22 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
             console.log("[auth] PKOIN received, broadcasting UserInfo...");
             await appInitializer.syncNodeTime();
             const { encPublicKeys, image, ...profile } = pendingRegProfile.value;
-
-            // Re-initialize SDK account so it sees the new unspents
             await appInitializer.initializeAndFetchUserData(address.value);
-
             await appInitializer.registerUserProfile(address.value, profile, encPublicKeys, image);
             console.log("[auth] UserInfo broadcast requested, moving to phase 2");
             setPendingRegProfile(null);
+            pollInterval = 3000;
+            attempt = 0;
           } else {
-            console.log("[auth] Waiting for PKOIN...");
+            console.log("[auth] Waiting for PKOIN... (attempt", attempt, ", next in", pollInterval / 1000, "s)");
           }
+          schedulePoll();
           return;
         }
 
         // Phase 2: Wait for blockchain confirmation of UserInfo
-        // Check 1: Actions system local status (instant)
         const actionsStatus = appInitializer.getAccountRegistrationStatus();
-        console.log("[auth] Registration poll — actions:", actionsStatus);
+        console.log("[auth] Registration poll — actions:", actionsStatus, "(attempt", attempt, ")");
 
         if (actionsStatus === 'registered') {
           console.log("[auth] Registration confirmed via Actions system!");
@@ -702,7 +704,6 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
           return;
         }
 
-        // Check 2: Direct blockchain RPC (fallback if Actions system can't find account)
         const confirmed = await appInitializer.checkUserRegistered(address.value);
         if (confirmed) {
           console.log("[auth] Registration confirmed on blockchain!");
@@ -710,28 +711,27 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
           return;
         }
 
-        console.log("[auth] Waiting for blockchain confirmation...");
-
-        // Fallback timeout
-        if (Date.now() - startTime > MAX_WAIT_MS) {
-          console.warn("[auth] Registration poll timeout, proceeding anyway");
-          setRegistrationPending(false);
-          stopRegistrationPoll();
-        }
+        console.log("[auth] Waiting for blockchain confirmation... (attempt", attempt, ", next in", pollInterval / 1000, "s)");
       } catch (e) {
-        console.warn("[auth] Registration poll error:", e);
+        console.warn("[auth] Registration poll error (attempt", attempt, "):", e);
       }
-    }, 10000);
+      schedulePoll();
+    };
+
+    const schedulePoll = () => {
+      registrationPollTimer = setTimeout(poll, pollInterval);
+      pollInterval = Math.min(pollInterval * 2, MAX_POLL_INTERVAL);
+    };
+
+    poll();
 
     async function onRegistrationConfirmed() {
-      // Load full user data
       await appInitializer.initializeAndFetchUserData(
         address.value!,
         (data: UserData) => setUserInfo(data)
       );
       setRegistrationPending(false);
       stopRegistrationPoll();
-      // Re-init Matrix if needed (to pick up updated user info)
       if (!matrixReady.value) {
         PocketnetInstanceConfigurator.setUserAddress(address.value!);
         PocketnetInstanceConfigurator.setUserGetKeyPairFc(() =>
@@ -744,7 +744,7 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
 
   const stopRegistrationPoll = () => {
     if (registrationPollTimer) {
-      clearInterval(registrationPollTimer);
+      clearTimeout(registrationPollTimer);
       registrationPollTimer = null;
     }
   };
