@@ -37,6 +37,11 @@ export const en = {
   "contactList.cancel": "Cancel",
   "contactList.draft": "Draft",
 
+  // ── Selection (multi-select) ──
+  "selection.selected": "Selected: {count}",
+  "selection.deleteTitle": "Delete chats",
+  "selection.deleteConfirm": "Delete {count} selected chats? This cannot be undone.",
+
   // ── Contact search ──
   "contactSearch.placeholder": "Search chats or users...",
   "contactSearch.placeholderShort": "Search",

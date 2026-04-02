@@ -39,6 +39,11 @@ export const ru: Record<TranslationKey, string> = {
   "contactList.cancel": "Отмена",
   "contactList.draft": "Черновик",
 
+  // ── Selection (multi-select) ──
+  "selection.selected": "Выбрано: {count}",
+  "selection.deleteTitle": "Удалить чаты",
+  "selection.deleteConfirm": "Удалить {count} выбранных чатов? Это действие нельзя отменить.",
+
   // ── Contact search ──
   "contactSearch.placeholder": "Поиск чатов или пользователей...",
   "contactSearch.placeholderShort": "Поиск",
