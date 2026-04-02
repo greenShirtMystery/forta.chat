@@ -423,6 +423,8 @@ let dateHideTimer: ReturnType<typeof setTimeout> | undefined;
 // switches AND same-room re-invocations (e.g. during store init).
 let watchVersion = 0;
 let scrollThrottleRaf: number | null = null;
+// Track the settled safety timeout so it can be cleared on room switch
+let pendingSettledTimeout: ReturnType<typeof setTimeout> | null = null;
 
 // Load messages when active room changes
 watch(
@@ -455,6 +457,10 @@ watch(
     if (scrollThrottleRaf !== null) {
       cancelAnimationFrame(scrollThrottleRaf);
       scrollThrottleRaf = null;
+    }
+    if (pendingSettledTimeout !== null) {
+      clearTimeout(pendingSettledTimeout);
+      pendingSettledTimeout = null;
     }
     forceDismiss();
     readTracker.stopTracking();
@@ -525,7 +531,7 @@ watch(
       if (isStale()) return;
 
       if (chatStore.chatDbKitRef && !chatStore.dexieMessagesReady) {
-        const readyDeadline = Date.now() + 200;
+        const readyDeadline = Date.now() + 500;
         while (!chatStore.dexieMessagesReady && Date.now() < readyDeadline) {
           await new Promise(r => setTimeout(r, 10));
           if (isStale()) return;
@@ -576,7 +582,23 @@ watch(
     await nextTick();
     if (isStale()) return;
 
+    // Safety net: if rAF never fires or scroll stabilization hangs
+    // (e.g. large rooms with slow rendering), force-reveal after 3s
+    // so the user never sees an empty screen indefinitely.
+    pendingSettledTimeout = setTimeout(() => {
+      pendingSettledTimeout = null;
+      if (!settled.value && !isStale()) {
+        console.warn("[MessageList] settled safety timeout — force revealing scroller");
+        settled.value = true;
+        switching.value = false;
+      }
+    }, 3000);
+
     requestAnimationFrame(() => {
+      if (pendingSettledTimeout !== null) {
+        clearTimeout(pendingSettledTimeout);
+        pendingSettledTimeout = null;
+      }
       if (isStale()) return;
 
       const el = getScrollContainer();
@@ -1067,8 +1089,9 @@ defineExpose({ scrollToMessage, setSearchQuery });
 
     <!-- Loading state: skeleton on initial room load when no messages exist yet.
          Also show skeleton when load hasn't been attempted yet (prevents empty state flash).
+         Show skeleton when settled=false to cover the gap where scroller has opacity:0.
          Never during pagination (expandMessageWindow / loadMoreMessages) to avoid skeleton flash. -->
-    <MessageSkeleton v-if="((loading || switching || !loadEverAttempted) && chatStore.activeMessages.length === 0)" />
+    <MessageSkeleton v-if="((loading || switching || !loadEverAttempted || !settled) && chatStore.activeMessages.length === 0)" />
 
     <!-- Empty state (only after fully loaded + settled + load was attempted, not during switching) -->
     <div
