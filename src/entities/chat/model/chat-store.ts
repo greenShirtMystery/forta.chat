@@ -2268,7 +2268,12 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       // Self-healing: check if we still have access to this room via Matrix SDK.
       // If the room was left/forgotten on another device but our local Dexie
       // cache still has it, tombstone it and clear the active room.
-      selfHealZombieRoom(roomId);
+      // Guard: only run AFTER initial sync completes. Before that, SDK doesn't
+      // have rooms loaded yet, so getRoom() returns null for valid rooms —
+      // causing false-positive tombstoning that removes the room from the list.
+      if (roomsInitialized.value) {
+        selfHealZombieRoom(roomId);
+      }
 
       // NOTE: Do NOT mark as read here. Reading happens incrementally
       // via IntersectionObserver in MessageList as user scrolls.
@@ -3779,8 +3784,11 @@ export const useChatStore = defineStore(NAMESPACE, () => {
           msgCount = countMessages(timelineEvents);
         }
 
-        // Keep scrolling back until we have enough messages or hit the beginning
+        // Keep scrolling back until we have enough messages or hit the beginning.
+        // Check activeRoomId between iterations — if user switched rooms, bail
+        // early to avoid piling up stale scrollback/crypto work.
         for (let attempt = 0; attempt < MAX_SCROLLBACK_ATTEMPTS && msgCount < MIN_MESSAGES; attempt++) {
+          if (activeRoomId.value !== roomId) return;
           const prevCount = timelineEvents.length;
           try {
             await matrixService.scrollback(roomId, 50);
@@ -3796,6 +3804,10 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         }
       }
 
+      // Bail if user already switched to another room — no point parsing/writing
+      // stale data that will saturate Dexie transactions and block the active room.
+      if (activeRoomId.value !== roomId) return;
+
       const msgs = await parseTimelineEvents(timelineEvents, roomId);
 
       // Apply existing read receipts to determine message status.
@@ -3806,7 +3818,10 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       setMessages(roomId, msgs);
 
       // Dual-write: persist all parsed messages to Dexie.
-      // Awaited (not fire-and-forget) so data reaches IndexedDB before a potential F5.
+      // For the active room: awaited so data reaches IndexedDB before a potential F5.
+      // For stale rooms (user switched away): fire-and-forget to avoid blocking
+      // Dexie transactions that the active room needs.
+      const isActiveRoom = activeRoomId.value === roomId;
       if (chatDbKitRef.value && msgs.length > 0) {
         const parsedMessages: ParsedMessage[] = msgs
           .filter(m => m.id && !m.id.startsWith("msg_")) // Skip optimistic temp messages
@@ -3828,8 +3843,8 @@ export const useChatStore = defineStore(NAMESPACE, () => {
             systemMeta: m.systemMeta,
             reactions: m.reactions,
           }));
-        try {
-          await chatDbKitRef.value.eventWriter.writeMessages(parsedMessages);
+        const dexieWriteWork = async () => {
+          await chatDbKitRef.value!.eventWriter.writeMessages(parsedMessages);
 
           // Patch Dexie records where parseTimelineEvents resolved a reply
           // but bulkInsert skipped the message (already existed with empty replyTo).
@@ -3837,22 +3852,34 @@ export const useChatStore = defineStore(NAMESPACE, () => {
             .filter(m => m.replyTo?.senderId && m.eventId)
             .map(m => ({ eventId: m.eventId!, replyTo: m.replyTo! }));
           if (resolvedReplies.length > 0) {
-            await chatDbKitRef.value.messages.patchUnresolvedReplies(resolvedReplies);
+            await chatDbKitRef.value!.messages.patchUnresolvedReplies(resolvedReplies);
           }
 
           // Also try to resolve any remaining unresolved replies from Dexie
           await enrichUnresolvedReplies(roomId);
-        } catch (e) {
-          console.warn("[chat-store] EventWriter.writeMessages failed:", e);
-        }
 
-        // Sync reactions to Dexie for messages that already existed (bulkInsert skips duplicates).
-        // This ensures Dexie has up-to-date reactions from the timeline.
-        const dbKit = chatDbKitRef.value;
-        for (const m of msgs) {
-          if (m.reactions && Object.keys(m.reactions).length > 0 && m.id && !m.id.startsWith("msg_")) {
-            dbKit.messages.updateReactions(m.id, m.reactions).catch(() => {});
+          // Sync reactions to Dexie for messages that already existed (bulkInsert skips duplicates).
+          // This ensures Dexie has up-to-date reactions from the timeline.
+          const dbKit = chatDbKitRef.value!;
+          for (const m of msgs) {
+            if (m.reactions && Object.keys(m.reactions).length > 0 && m.id && !m.id.startsWith("msg_")) {
+              dbKit.messages.updateReactions(m.id, m.reactions).catch(() => {});
+            }
           }
+        };
+
+        if (isActiveRoom) {
+          // Active room: await so data is persisted before user can F5
+          try {
+            await dexieWriteWork();
+          } catch (e) {
+            console.warn("[chat-store] EventWriter.writeMessages failed:", e);
+          }
+        } else {
+          // Stale room: fire-and-forget to unblock Dexie for the active room
+          dexieWriteWork().catch(e => {
+            console.warn("[chat-store] EventWriter.writeMessages (background) failed:", e);
+          });
         }
       }
 

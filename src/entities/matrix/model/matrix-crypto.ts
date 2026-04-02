@@ -640,7 +640,15 @@ export class Pcrypto {
 
       async prepare(): Promise<PcryptoRoomInstance> {
         getusershistory();
-        await getusersinfo();
+
+        // Skip expensive network call for large rooms: E2EE is disabled
+        // when there are ≥50 participants (canBeEncrypt returns false),
+        // so fetching everyone's crypto keys is wasted work that blocks
+        // message rendering for seconds in 1000+ member rooms.
+        const memberCount = Object.keys(users).length;
+        if (memberCount < 50) {
+          await getusersinfo();
+        }
 
         return room;
       },
