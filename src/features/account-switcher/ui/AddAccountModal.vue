@@ -49,7 +49,7 @@ watch(() => props.show, (val) => {
           {{ t("settings.addAccount") }}
         </h2>
         <button
-          class="flex h-8 w-8 items-center justify-center rounded-full text-text-color-secondary hover:bg-neutral-grad-0"
+          class="flex h-8 w-8 items-center justify-center rounded-full text-text-on-main-bg-color hover:bg-neutral-grad-0"
           @click="emit('close')"
         >
           <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -61,14 +61,14 @@ watch(() => props.show, (val) => {
 
       <!-- Form -->
       <form @submit.prevent="handleSubmit" class="flex flex-col gap-3">
-        <label class="text-sm text-text-color-secondary">
+        <label class="text-sm text-text-on-main-bg-color">
           {{ t("auth.enterKeyOrMnemonic") }}
         </label>
         <textarea
           v-model="credential"
           :placeholder="t('auth.keyPlaceholder')"
           rows="3"
-          class="w-full resize-none rounded-lg border border-neutral-grad-0 bg-background-main-theme p-3 text-sm text-text-color outline-none transition-colors focus:border-color-bg-ac"
+          class="w-full resize-none rounded-lg border border-neutral-grad-0 bg-background-secondary-theme p-3 text-sm text-text-color outline-none transition-colors focus:border-color-bg-ac"
           :disabled="loading"
         />
 

@@ -52,77 +52,90 @@ function formatUnread(count: number): string {
 <template>
   <div class="flex flex-col">
     <!-- Account items -->
-    <button
+    <div
       v-for="account in visibleAccounts"
       :key="account.address"
-      class="flex w-full items-center gap-3 rounded-lg transition-colors hover:bg-neutral-grad-0"
+      class="group flex w-full items-center rounded-lg transition-colors hover:bg-neutral-grad-0"
       :class="compact ? 'px-2 py-2' : 'px-3 py-3'"
-      @click="emit('switch', account.address)"
-      @contextmenu.prevent="
-        account.address !== authStore.activeAddress &&
-          emit('remove', account.address)
-      "
     >
-      <!-- Avatar with active dot -->
-      <div class="relative shrink-0">
-        <Avatar
-          :src="userStore.getUser(account.address)?.image"
-          :name="
-            userStore.getUser(account.address)?.name ||
-            account.address
-          "
-          :size="compact ? 'sm' : 'md'"
-        />
-        <!-- Green active dot -->
-        <span
+      <button
+        class="flex min-w-0 flex-1 items-center gap-3"
+        @click="emit('switch', account.address)"
+      >
+        <!-- Avatar with active dot -->
+        <div class="relative shrink-0">
+          <Avatar
+            :src="userStore.getUser(account.address)?.image"
+            :name="
+              userStore.getUser(account.address)?.name ||
+              account.address
+            "
+            :size="compact ? 'sm' : 'md'"
+          />
+          <!-- Green active dot -->
+          <span
+            v-if="account.address === authStore.activeAddress"
+            class="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-chat-sidebar bg-color-good"
+          />
+        </div>
+
+        <!-- Name + address -->
+        <div class="flex min-w-0 flex-1 flex-col text-left">
+          <span
+            class="truncate text-sm font-medium text-text-color"
+            :class="compact ? 'text-xs' : 'text-sm'"
+          >
+            {{
+              userStore.getUser(account.address)?.name ||
+              account.address
+            }}
+          </span>
+          <span
+            v-if="!compact"
+            class="truncate text-xs text-text-on-main-bg-color"
+          >
+            {{ account.address }}
+          </span>
+        </div>
+
+        <!-- Checkmark for active account -->
+        <svg
           v-if="account.address === authStore.activeAddress"
-          class="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-chat-sidebar bg-color-good"
-        />
-      </div>
-
-      <!-- Name + address -->
-      <div class="flex min-w-0 flex-1 flex-col text-left">
-        <span
-          class="truncate text-sm font-medium text-text-color"
-          :class="compact ? 'text-xs' : 'text-sm'"
+          width="18"
+          height="18"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          class="shrink-0 text-color-bg-ac"
         >
-          {{
-            userStore.getUser(account.address)?.name ||
-            account.address
-          }}
-        </span>
+          <polyline points="20 6 9 17 4 12" />
+        </svg>
+
+        <!-- Unread badge for non-active accounts -->
         <span
-          v-if="!compact"
-          class="truncate text-xs text-text-on-main-bg-color"
+          v-else-if="getUnreadCount(account.address) > 0"
+          class="flex h-5 min-w-[20px] items-center justify-center rounded-full bg-color-bg-ac px-1.5 text-[11px] font-medium leading-none text-white"
         >
-          {{ account.address }}
+          {{ formatUnread(getUnreadCount(account.address)) }}
         </span>
-      </div>
+      </button>
 
-      <!-- Checkmark for active account -->
-      <svg
-        v-if="account.address === authStore.activeAddress"
-        width="18"
-        height="18"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2.5"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-        class="shrink-0 text-color-bg-ac"
+      <!-- Remove button (visible on hover / always on touch) -->
+      <button
+        v-if="!compact && account.address !== authStore.activeAddress"
+        class="ml-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-text-on-main-bg-color opacity-0 transition-opacity hover:bg-neutral-grad-0 hover:text-color-bad group-hover:opacity-100"
+        :aria-label="t('settings.removeAccount')"
+        @click.stop="emit('remove', account.address)"
       >
-        <polyline points="20 6 9 17 4 12" />
-      </svg>
-
-      <!-- Unread badge for non-active accounts -->
-      <span
-        v-else-if="getUnreadCount(account.address) > 0"
-        class="flex h-5 min-w-[20px] items-center justify-center rounded-full bg-color-bg-ac px-1.5 text-[11px] font-medium leading-none text-white"
-      >
-        {{ formatUnread(getUnreadCount(account.address)) }}
-      </span>
-    </button>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18" />
+          <line x1="6" y1="6" x2="18" y2="18" />
+        </svg>
+      </button>
+    </div>
 
     <!-- Add account button -->
     <button

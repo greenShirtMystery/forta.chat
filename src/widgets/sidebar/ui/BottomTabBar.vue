@@ -29,7 +29,6 @@ const showAccountPopover = ref(false);
 let longPressTimer: ReturnType<typeof setTimeout> | null = null;
 
 const onSettingsPointerDown = () => {
-  if (!authStore.isMultiAccount) return;
   longPressTimer = setTimeout(() => {
     showAccountPopover.value = true;
     longPressTimer = null;
@@ -120,7 +119,7 @@ const handlePopoverSwitch = (address: string) => {
       @pointerdown="onSettingsPointerDown"
       @pointerup="onSettingsPointerUp"
       @pointerleave="onSettingsPointerUp"
-      @contextmenu.prevent="authStore.isMultiAccount && (showAccountPopover = true)"
+      @contextmenu.prevent="showAccountPopover = true"
     >
       <div
         v-if="authStore.address"
