@@ -28,6 +28,7 @@ class MainActivity : BridgeActivity() {
     private var insetBottom = 0
     private var insetLeft = 0
     private var insetRight = 0
+    private var keyboardHeight = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         registerPlugin(TorPlugin::class.java)
@@ -47,17 +48,26 @@ class MainActivity : BridgeActivity() {
             AppUpdater.checkForUpdateIfNeeded(this@MainActivity, isManual = false)
         }
 
-        // Inject real safe area insets as CSS variables into the WebView
+        // Inject real safe area insets + keyboard height as CSS variables into the WebView.
+        // With edge-to-edge enabled, adjustResize alone doesn't resize the window on API 30+.
+        // We must explicitly read Type.ime() insets to get keyboard height.
         val rootView = findViewById<View>(android.R.id.content)
         ViewCompat.setOnApplyWindowInsetsListener(rootView) { view, insets ->
             val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
             val density = resources.displayMetrics.density
+
             insetTop = (systemBars.top / density).toInt()
             insetBottom = (systemBars.bottom / density).toInt()
             insetLeft = (systemBars.left / density).toInt()
             insetRight = (systemBars.right / density).toInt()
 
+            // IME bottom includes navigation bar height — subtract it for pure keyboard height
+            val rawKeyboard = (ime.bottom / density).toInt()
+            keyboardHeight = if (rawKeyboard > insetBottom) rawKeyboard - insetBottom else 0
+
             injectSafeAreaInsets()
+            injectKeyboardHeight()
             ViewCompat.onApplyWindowInsets(view, insets)
         }
     }
@@ -66,6 +76,7 @@ class MainActivity : BridgeActivity() {
         super.onResume()
         // Re-inject after resume — WebView may have reloaded or CSS may have overridden values
         injectSafeAreaInsets()
+        injectKeyboardHeight()
     }
 
     private fun injectSafeAreaInsets() {
@@ -82,5 +93,15 @@ class MainActivity : BridgeActivity() {
         webView.post { webView.evaluateJavascript(js, null) }
         // Re-inject after a delay to ensure CSS hasn't overridden values after page load
         webView.postDelayed({ webView.evaluateJavascript(js, null) }, 1000)
+    }
+
+    private fun injectKeyboardHeight() {
+        val webView = bridge?.webView ?: return
+        val js = """
+            (function() {
+                document.documentElement.style.setProperty('--native-keyboard-height', '${keyboardHeight}px');
+            })();
+        """.trimIndent()
+        webView.post { webView.evaluateJavascript(js, null) }
     }
 }
