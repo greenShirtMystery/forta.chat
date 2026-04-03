@@ -4,6 +4,7 @@ import { useChatStore } from "@/entities/chat";
 import { useAuthStore } from "@/entities/auth";
 import { useUserStore } from "@/entities/user/model";
 import Avatar from "@/shared/ui/avatar/Avatar.vue";
+import { AccountSwitcherPopover } from "@/features/account-switcher";
 
 const props = defineProps<{ modelValue: SidebarTab }>();
 const emit = defineEmits<{ "update:modelValue": [tab: SidebarTab] }>();
@@ -23,6 +24,28 @@ watch(
 const currentUser = computed(() =>
   authStore.address ? userStore.getUser(authStore.address) : undefined,
 );
+
+const showAccountPopover = ref(false);
+let longPressTimer: ReturnType<typeof setTimeout> | null = null;
+
+const onSettingsPointerDown = () => {
+  if (!authStore.isMultiAccount) return;
+  longPressTimer = setTimeout(() => {
+    showAccountPopover.value = true;
+    longPressTimer = null;
+  }, 500);
+};
+
+const onSettingsPointerUp = () => {
+  if (longPressTimer) {
+    clearTimeout(longPressTimer);
+    longPressTimer = null;
+  }
+};
+
+const handlePopoverSwitch = (address: string) => {
+  authStore.switchAccount(address);
+};
 </script>
 
 <template>
@@ -94,6 +117,10 @@ const currentUser = computed(() =>
       :aria-label="t('nav.settings')"
       :aria-current="modelValue === 'settings' ? 'page' : undefined"
       @click="emit('update:modelValue', 'settings')"
+      @pointerdown="onSettingsPointerDown"
+      @pointerup="onSettingsPointerUp"
+      @pointerleave="onSettingsPointerUp"
+      @contextmenu.prevent="authStore.isMultiAccount && (showAccountPopover = true)"
     >
       <div
         v-if="authStore.address"
@@ -124,6 +151,13 @@ const currentUser = computed(() =>
       </svg>
       <span class="text-[10px] leading-tight">{{ t("nav.settings") }}</span>
     </button>
+
+    <AccountSwitcherPopover
+      v-if="showAccountPopover"
+      @switch="handlePopoverSwitch"
+      @add="emit('update:modelValue', 'settings')"
+      @close="showAccountPopover = false"
+    />
   </nav>
 </template>
 

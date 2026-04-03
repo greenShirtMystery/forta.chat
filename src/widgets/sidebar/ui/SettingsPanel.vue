@@ -3,6 +3,7 @@ import { useAuthStore } from "@/entities/auth";
 import { useThemeStore } from "@/entities/theme";
 import { useTorStore } from "@/entities/tor";
 import { useUserStore } from "@/entities/user/model";
+import { AccountList, AddAccountModal } from "@/features/account-switcher";
 import { useWallet } from "@/features/wallet/model/use-wallet";
 import Avatar from "@/shared/ui/avatar/Avatar.vue";
 import { Toggle } from "@/shared/ui/toggle";
@@ -119,6 +120,20 @@ const handleCheckUpdates = async () => {
   }
 };
 
+const showAddModal = ref(false);
+
+const handleSwitch = (address: string) => {
+  if (address !== authStore.activeAddress) {
+    authStore.switchAccount(address);
+  }
+};
+
+const handleRemoveAccount = (address: string) => {
+  if (confirm(t("settings.removeAccountConfirm"))) {
+    authStore.removeAccount(address);
+  }
+};
+
 const handleLogout = () => {
   authStore.logout();
   router.push({ name: "WelcomePage" });
@@ -152,6 +167,16 @@ const handleLogout = () => {
         >
           {{ authStore.address }}
         </p>
+      </div>
+
+      <!-- Multi-account list (shown between profile header and menu items) -->
+      <div class="px-2">
+        <AccountList
+          :show-active="false"
+          @switch="handleSwitch"
+          @add="showAddModal = true"
+          @remove="handleRemoveAccount"
+        />
       </div>
 
       <!-- Menu items -->
@@ -416,5 +441,10 @@ const handleLogout = () => {
         </div>
       </div>
     </Teleport>
+
+    <AddAccountModal
+      v-if="showAddModal"
+      @close="showAddModal = false"
+    />
   </div>
 </template>
