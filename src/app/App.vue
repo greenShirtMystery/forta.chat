@@ -200,18 +200,33 @@ onMounted(async () => {
     }
   }
 
-  // Keyboard height detection via visualViewport API
+  // Keyboard height detection: native IME insets (primary) + visualViewport (fallback).
+  // Native --native-keyboard-height is injected by MainActivity.kt on every WindowInsets change.
+  // visualViewport serves as fallback for devices where native injection is delayed or unavailable.
   if (window.visualViewport) {
     const vv = window.visualViewport;
     const updateKeyboardHeight = () => {
-      const kbh = window.innerHeight - vv.height;
-      document.documentElement.style.setProperty("--keyboardheight", `${Math.max(0, kbh)}px`);
+      const webKbh = Math.max(0, window.innerHeight - vv.height);
+      // Read native value injected from Kotlin via CSS variable
+      const nativeKbh = parseInt(
+        getComputedStyle(document.documentElement).getPropertyValue("--native-keyboard-height") || "0",
+        10,
+      );
+      // Use whichever is larger — covers edge cases across all devices
+      const kbh = Math.max(webKbh, nativeKbh);
+      document.documentElement.style.setProperty("--keyboardheight", `${kbh}px`);
     };
     vv.addEventListener("resize", updateKeyboardHeight);
-    onUnmounted(() => vv.removeEventListener("resize", updateKeyboardHeight));
+    // Some Android WebViews (Samsung) fire scroll instead of resize when keyboard toolbar changes
+    vv.addEventListener("scroll", updateKeyboardHeight);
+    onUnmounted(() => {
+      vv.removeEventListener("resize", updateKeyboardHeight);
+      vv.removeEventListener("scroll", updateKeyboardHeight);
+    });
   }
 
-  // On native platforms, scroll focused inputs into view when keyboard opens
+  // On native platforms, scroll focused inputs into view when keyboard opens.
+  // Two passes: 300ms (keyboard appearing) and 600ms (delayed toolbar expansion on some keyboards).
   if (isNative) {
     const handleFocusIn = (e: FocusEvent) => {
       const target = e.target as HTMLElement;
@@ -220,9 +235,9 @@ onMounted(async () => {
         target.tagName === "TEXTAREA" ||
         target.isContentEditable
       ) {
-        setTimeout(() => {
-          target.scrollIntoView({ block: "center", behavior: "smooth" });
-        }, 300);
+        const scrollIt = () => target.scrollIntoView({ block: "center", behavior: "smooth" });
+        setTimeout(scrollIt, 300);
+        setTimeout(scrollIt, 600);
       }
     };
     document.addEventListener("focusin", handleFocusIn);
