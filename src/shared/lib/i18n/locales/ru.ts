@@ -83,6 +83,10 @@ export const ru: Record<TranslationKey, string> = {
   "settings.notifications": "Уведомления",
   "settings.enabled": "Включены",
   "settings.privacy": "Приватность",
+  "settings.addAccount": "Добавить аккаунт",
+  "settings.removeAccount": "Выйти",
+  "settings.removeAccountConfirm": "Выйти из этого аккаунта?",
+  "settings.switching": "Переключение...",
 
   // ── Settings content / Appearance ──
   "settings.editProfile": "Редактировать профиль",
@@ -427,6 +431,8 @@ export const ru: Record<TranslationKey, string> = {
   "auth.show": "Показать",
   "auth.hide": "Скрыть",
   "auth.howToFindKey": "Как найти приватный ключ?",
+  "auth.enterKeyOrMnemonic": "Введите приватный ключ или мнемоническую фразу",
+  "auth.keyPlaceholder": "Приватный ключ или 12 слов...",
 
   // ── Welcome ──
   "welcome.title": "Forta Chat",
