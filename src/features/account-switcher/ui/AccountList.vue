@@ -41,7 +41,7 @@ const visibleAccounts = computed(() => {
 });
 
 function getUnreadCount(address: string): number {
-  return (authStore as any).backgroundSyncManager?.getUnreadCount(address) ?? 0;
+  return authStore.getBackgroundUnreadCount(address);
 }
 
 function formatUnread(count: number): string {

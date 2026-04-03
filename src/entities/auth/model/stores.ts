@@ -121,6 +121,7 @@ function extractErrorCode(err: unknown): number | null {
 // Store-level references for cleanup on logout
 let _onlineHandler: (() => void) | null = null;
 let _offlineHandler: (() => void) | null = null;
+let _appStateHandle: { remove: () => Promise<void> } | null = null;
 let _blockHeightInterval: ReturnType<typeof setInterval> | null = null;
 
 export const useAuthStore = defineStore(NAMESPACE, () => {
@@ -580,11 +581,14 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
           }
 
           // Switch background sync interval when app goes to background
-          import("@capacitor/app").then(({ App: CapApp }) => {
-            CapApp.addListener("appStateChange", ({ isActive }) => {
-              backgroundSyncManager.setAppState(isActive);
-            });
-          }).catch(() => {});
+          // Guard: only register once (prevent leak on account switch → re-init)
+          if (!_appStateHandle) {
+            import("@capacitor/app").then(({ App: CapApp }) => {
+              CapApp.addListener("appStateChange", ({ isActive }) => {
+                backgroundSyncManager.setAppState(isActive);
+              }).then(handle => { _appStateHandle = handle; }).catch(() => {});
+            }).catch(() => {});
+          }
         }
 
         // Note: rooms are loaded by the onSync("PREPARED") callback which
@@ -736,6 +740,11 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
 
         // Initialize Matrix after successful auth
         await initMatrix();
+
+        // Bind per-account localStorage keys (pinned/muted rooms)
+        if (address.value) {
+          useChatStore().bindAccountKeys(address.value);
+        }
 
         return { data: authData, error: null };
       } catch {
@@ -1247,8 +1256,8 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
     addAccount,
     removeAccount,
     switchAccount,
-    sessionManager,
-    backgroundSyncManager,
+    /** Get unread count for a background account */
+    getBackgroundUnreadCount: (addr: string) => backgroundSyncManager.getUnreadCount(addr),
     clearRegistrationState,
     editUserData,
     fetchCaptcha,

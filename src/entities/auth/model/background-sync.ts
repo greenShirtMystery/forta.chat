@@ -116,6 +116,11 @@ export class BackgroundSyncManager {
         console.warn(
           `[BackgroundSync] ${poller.address}: HTTP ${res.status}`,
         );
+        // Stop polling on auth errors — token expired or revoked
+        if (res.status === 401 || res.status === 403) {
+          this.stop(poller.address);
+          return;
+        }
       } else {
         const data = await res.json();
 
