@@ -2268,6 +2268,34 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         // Matrix service not ready yet — members will load on next sync
       }
 
+      // Bootstrap clearedAtTs from Matrix account_data (cross-device sync)
+      if (chatDbKitRef.value) {
+        try {
+          const matrixService = getMatrixClientService();
+          const data = matrixService.getRoomAccountData(roomId, "m.bastyon.clear_history");
+          if (data?.cleared_at_ts && typeof data.cleared_at_ts === "number") {
+            const existingTs = chatDbKitRef.value.eventWriter.getClearedAtTs(roomId);
+            if (!existingTs || data.cleared_at_ts > existingTs) {
+              chatDbKitRef.value.eventWriter.setClearedAtTs(roomId, data.cleared_at_ts as number);
+              // Fire-and-forget: purge stale messages in background
+              (async () => {
+                try {
+                  const localRoom = await chatDbKitRef.value!.rooms.getRoom(roomId);
+                  if (!localRoom?.clearedAtTs || localRoom.clearedAtTs < (data.cleared_at_ts as number)) {
+                    await chatDbKitRef.value!.rooms.clearHistory(roomId, data.cleared_at_ts as number);
+                    await chatDbKitRef.value!.messages.purgeBeforeTimestamp(roomId, data.cleared_at_ts as number);
+                  }
+                } catch (e) {
+                  console.warn("[chat-store] Failed to bootstrap clearedAtTs:", e);
+                }
+              })();
+            }
+          }
+        } catch {
+          // Matrix service not ready yet — will sync via Room.accountData event later
+        }
+      }
+
       // Self-healing: check if we still have access to this room via Matrix SDK.
       // If the room was left/forgotten on another device but our local Dexie
       // cache still has it, tombstone it and clear the active room.
@@ -2516,6 +2544,42 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       await matrixService.forgetRoom(roomId);
     } catch (e) {
       console.warn("[chat-store] removeRoom leave/forget error:", e);
+    }
+  };
+
+  /** Clear chat history for current user only. Room membership is NOT affected.
+   *  1. Save marker to Matrix room account_data (cross-device sync)
+   *  2. Save marker to Dexie LocalRoom.clearedAtTs
+   *  3. Purge old timeline events from Dexie
+   *  4. Reset room preview and pagination state
+   *  5. Clear in-memory messages */
+  const clearHistory = async (roomId: string) => {
+    const now = Date.now();
+
+    // 1. Save marker to Matrix account_data (cross-device)
+    try {
+      const matrixService = getMatrixClientService();
+      await matrixService.setRoomAccountData(roomId, "m.bastyon.clear_history", {
+        cleared_at_ts: now,
+      });
+    } catch (e) {
+      console.warn("[chat-store] clearHistory: failed to set account_data, continuing with local-only clear:", e);
+    }
+
+    // 2-4. Dexie: set marker + purge messages + reset preview/pagination
+    if (chatDbKitRef.value) {
+      chatDbKitRef.value.eventWriter.setClearedAtTs(roomId, now);
+      await chatDbKitRef.value.rooms.clearHistory(roomId, now);
+      await chatDbKitRef.value.messages.purgeBeforeTimestamp(roomId, now);
+    }
+
+    // 5. Clear in-memory messages for this room
+    messages.value[roomId] = [];
+    triggerRef(messages);
+
+    // Reset message window so liveQuery re-fires with empty result
+    if (activeRoomId.value === roomId) {
+      messageWindowSize.value = 50;
     }
   };
 
@@ -4971,6 +5035,35 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     optimisticRemoveRoom(roomId);
   };
 
+  /** Handle Room.accountData events — cross-device sync for clear-history markers */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const handleRoomAccountData = async (event: any, room: any) => {
+    if (event.getType?.() !== "m.bastyon.clear_history") return;
+    const content = event.getContent?.();
+    const clearedAtTs = content?.cleared_at_ts;
+    if (!clearedAtTs || typeof clearedAtTs !== "number") return;
+
+    const roomId = room?.roomId ?? room?.getId?.();
+    if (!roomId) return;
+
+    // Check if this is newer than what we have locally
+    if (chatDbKitRef.value) {
+      const existingTs = chatDbKitRef.value.eventWriter.getClearedAtTs(roomId);
+      if (existingTs && existingTs >= clearedAtTs) return;
+
+      chatDbKitRef.value.eventWriter.setClearedAtTs(roomId, clearedAtTs);
+      await chatDbKitRef.value.rooms.clearHistory(roomId, clearedAtTs);
+      await chatDbKitRef.value.messages.purgeBeforeTimestamp(roomId, clearedAtTs);
+
+      // Clear in-memory messages if this room is active
+      if (activeRoomId.value === roomId) {
+        messages.value[roomId] = [];
+        triggerRef(messages);
+        messageWindowSize.value = 50;
+      }
+    }
+  };
+
   /** Revive a tombstoned room (used when rejoining a previously-deleted room) */
   const clearDeletedRoom = (roomId: string) => {
     if (chatDbKitRef.value) {
@@ -5185,6 +5278,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     getRoomPowerLevels,
     getTypingUsers,
     handleKicked,
+    handleRoomAccountData,
     handleReceiptEvent,
     handleRedactionEvent,
     handleTimelineEvent,
@@ -5197,6 +5291,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     getBannedMembers,
     isMemberMuted,
     kickMember,
+    clearHistory,
     leaveGroup,
     loadCachedMessages,
     loadCachedRooms,

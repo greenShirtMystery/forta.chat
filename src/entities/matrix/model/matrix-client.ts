@@ -27,6 +27,7 @@ export type ReceiptCallback = (event: unknown, room: unknown) => void;
 export type RedactionCallback = (event: unknown, room: unknown) => void;
 export type MyMembershipCallback = (room: unknown, membership: string, prevMembership: string | undefined) => void;
 export type IncomingCallCallback = (call: unknown) => void;
+export type RoomAccountDataCallback = (event: unknown, room: unknown) => void;
 
 export class MatrixClientService {
   private baseUrl: string;
@@ -55,6 +56,7 @@ export class MatrixClientService {
   private onMyMembership: MyMembershipCallback | null = null;
   private onIncomingCall: IncomingCallCallback | null = null;
   private onRoom: ((room: unknown) => void) | null = null;
+  private onRoomAccountData: RoomAccountDataCallback | null = null;
 
   constructor(domain?: string) {
     this.baseUrl = `https://${domain ?? MATRIX_SERVER}`;
@@ -75,6 +77,7 @@ export class MatrixClientService {
     onMyMembership?: MyMembershipCallback;
     onIncomingCall?: IncomingCallCallback;
     onRoom?: (room: unknown) => void;
+    onRoomAccountData?: RoomAccountDataCallback;
   }) {
     if (handlers.onSync) this.onSync = handlers.onSync;
     if (handlers.onTimeline) this.onTimeline = handlers.onTimeline;
@@ -85,6 +88,7 @@ export class MatrixClientService {
     if (handlers.onMyMembership) this.onMyMembership = handlers.onMyMembership;
     if (handlers.onIncomingCall) this.onIncomingCall = handlers.onIncomingCall;
     if (handlers.onRoom) this.onRoom = handlers.onRoom;
+    if (handlers.onRoomAccountData) this.onRoomAccountData = handlers.onRoomAccountData;
   }
 
   /** Custom request function using axios (matching bastyon-chat pattern) */
@@ -385,6 +389,12 @@ export class MatrixClientService {
     this.client.on("Room" as string, (room: unknown) => {
       if (!this.chatsReady) return;
       this.onRoom?.(room);
+    });
+
+    // Room account_data changes (e.g. clear-history markers from other devices)
+    this.client.on("Room.accountData" as string, (event: unknown, room: unknown) => {
+      if (!this.chatsReady) return;
+      this.onRoomAccountData?.(event, room);
     });
 
     this.client.on("sync", (state: string) => {
