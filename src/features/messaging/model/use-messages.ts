@@ -11,13 +11,39 @@ import { enqueue, dequeue, getQueue } from "@/shared/lib/offline-queue";
 import type { QueuedMessage } from "@/shared/lib/offline-queue";
 import { isChatDbReady, getChatDb } from "@/shared/lib/local-db";
 import { invalidateDownloadCache } from "./use-file-download";
+import { registerUploadAbort, unregisterUploadAbort } from "./upload-abort-registry";
 import { withTimeout } from "@/shared/lib/with-timeout";
+import type { LocalMessageStatus } from "@/shared/lib/local-db/schema";
 
 /** Max time for the entire media pipeline (encrypt + upload + send event + confirm) */
 const MEDIA_PIPELINE_TIMEOUT = 5 * 60 * 1000; // 5 minutes
 
 /** Max file size for uploads (100 MB — typical Matrix homeserver limit) */
 const MAX_UPLOAD_SIZE = 100 * 1024 * 1024;
+
+/** Clean up a cancelled upload: mark message, revoke blob, remove pending ops */
+async function handleUploadCancelled(
+  dbKit: ReturnType<typeof getChatDb>,
+  clientId: string,
+  localBlobUrl?: string,
+): Promise<void> {
+  await dbKit.db.messages.where("clientId").equals(clientId).modify({
+    status: "cancelled" as LocalMessageStatus,
+    uploadProgress: undefined,
+    uploadPhase: undefined,
+  });
+
+  if (localBlobUrl) URL.revokeObjectURL(localBlobUrl);
+
+  await dbKit.db.pendingOps.where("clientId").equals(clientId).delete();
+
+  // Remove the cancelled message after user sees the feedback
+  setTimeout(async () => {
+    try {
+      await dbKit.db.messages.where("clientId").equals(clientId).delete();
+    } catch { /* already deleted */ }
+  }, 3000);
+}
 
 export function useMessages() {
   const chatStore = useChatStore();
@@ -440,12 +466,23 @@ export function useMessages() {
           uploadProgress: 0,
         });
 
-        // Async upload pipeline (with timeout to prevent infinite spinner)
+        // Async upload pipeline (with abort support)
         (async () => {
-          try {
-            await withTimeout((async () => {
-              const roomCrypto = authStore.pcrypto?.rooms[roomId] as PcryptoRoomInstance | undefined;
+          const controller = registerUploadAbort(localMsg.clientId);
+          const { signal } = controller;
 
+          try {
+            const checkAbort = () => {
+              if (signal.aborted) throw new DOMException("Upload cancelled", "AbortError");
+            };
+
+            await withTimeout((async () => {
+              // Phase 1: Encrypt
+              checkAbort();
+              await dbKit.db.messages.where("clientId").equals(localMsg.clientId)
+                .modify({ uploadPhase: "encrypting" });
+
+              const roomCrypto = authStore.pcrypto?.rooms[roomId] as PcryptoRoomInstance | undefined;
               let fileToUpload: Blob = file;
               let secrets: Record<string, unknown> | undefined;
 
@@ -455,10 +492,20 @@ export function useMessages() {
                 fileToUpload = encrypted.file;
               }
 
+              // Phase 2: Upload
+              checkAbort();
+              await dbKit.db.messages.where("clientId").equals(localMsg.clientId)
+                .modify({ uploadPhase: "uploading" });
+
               const url = await matrixService.uploadContent(fileToUpload, (progress) => {
                 const percent = progress.total > 0 ? Math.round((progress.loaded / progress.total) * 100) : 0;
                 dbKit.messages.updateUploadProgress(localMsg.clientId, percent);
-              });
+              }, signal);
+
+              // Phase 3: Send event
+              checkAbort();
+              await dbKit.db.messages.where("clientId").equals(localMsg.clientId)
+                .modify({ uploadPhase: "sending_event", uploadProgress: 100 });
 
               const content: Record<string, unknown> = {
                 body: options.caption || "Image",
@@ -494,14 +541,21 @@ export function useMessages() {
               setTimeout(() => URL.revokeObjectURL(localBlobUrl), 5000);
             })(), MEDIA_PIPELINE_TIMEOUT, "Image upload");
           } catch (e) {
-            console.error("Failed to send image (Dexie path):", e);
-            const current = await dbKit.messages.getByClientId(localMsg.clientId);
-            if (current && current.status !== "synced") {
-              await dbKit.db.messages.where("clientId").equals(localMsg.clientId).modify({
-                status: "failed" as import("@/shared/lib/local-db/schema").LocalMessageStatus,
-                uploadProgress: undefined,
-              });
+            if (e instanceof DOMException && e.name === "AbortError") {
+              await handleUploadCancelled(dbKit, localMsg.clientId, localBlobUrl);
+            } else {
+              console.error("Failed to send image (Dexie path):", e);
+              const current = await dbKit.messages.getByClientId(localMsg.clientId);
+              if (current && current.status !== "synced") {
+                await dbKit.db.messages.where("clientId").equals(localMsg.clientId).modify({
+                  status: "failed" as LocalMessageStatus,
+                  uploadProgress: undefined,
+                  uploadPhase: undefined,
+                });
+              }
             }
+          } finally {
+            unregisterUploadAbort(localMsg.clientId);
           }
         })();
 
