@@ -21,28 +21,40 @@ const MEDIA_PIPELINE_TIMEOUT = 5 * 60 * 1000; // 5 minutes
 /** Max file size for uploads (100 MB — typical Matrix homeserver limit) */
 const MAX_UPLOAD_SIZE = 100 * 1024 * 1024;
 
+/** Track which clientIds are already being cancelled (prevent double invocation) */
+const cancellingSet = new Set<string>();
+
 /** Clean up a cancelled upload: mark message, revoke blob, remove pending ops */
 async function handleUploadCancelled(
   dbKit: ReturnType<typeof getChatDb>,
   clientId: string,
   localBlobUrl?: string,
 ): Promise<void> {
-  await dbKit.db.messages.where("clientId").equals(clientId).modify({
-    status: "cancelled" as LocalMessageStatus,
-    uploadProgress: undefined,
-    uploadPhase: undefined,
-  });
+  // Guard: prevent double invocation from both abort catch and cancelMediaUpload
+  if (cancellingSet.has(clientId)) return;
+  cancellingSet.add(clientId);
 
-  if (localBlobUrl) URL.revokeObjectURL(localBlobUrl);
+  try {
+    await dbKit.db.messages.where("clientId").equals(clientId).modify({
+      status: "cancelled" as LocalMessageStatus,
+      uploadProgress: undefined,
+      uploadPhase: undefined,
+    });
 
-  await dbKit.db.pendingOps.where("clientId").equals(clientId).delete();
+    if (localBlobUrl) URL.revokeObjectURL(localBlobUrl);
 
-  // Remove the cancelled message after user sees the feedback
-  setTimeout(async () => {
-    try {
-      await dbKit.db.messages.where("clientId").equals(clientId).delete();
-    } catch { /* already deleted */ }
-  }, 3000);
+    await dbKit.db.pendingOps.where("clientId").equals(clientId).delete();
+
+    // Remove the cancelled message after user sees the feedback
+    setTimeout(async () => {
+      try {
+        await dbKit.db.messages.where("clientId").equals(clientId).delete();
+      } catch { /* already deleted */ }
+      cancellingSet.delete(clientId);
+    }, 3000);
+  } catch {
+    cancellingSet.delete(clientId);
+  }
 }
 
 export function useMessages() {
