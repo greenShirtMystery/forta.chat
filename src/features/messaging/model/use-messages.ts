@@ -11,7 +11,7 @@ import { enqueue, dequeue, getQueue } from "@/shared/lib/offline-queue";
 import type { QueuedMessage } from "@/shared/lib/offline-queue";
 import { isChatDbReady, getChatDb } from "@/shared/lib/local-db";
 import { invalidateDownloadCache } from "./use-file-download";
-import { registerUploadAbort, unregisterUploadAbort } from "./upload-abort-registry";
+import { registerUploadAbort, unregisterUploadAbort, abortUpload } from "./upload-abort-registry";
 import { withTimeout } from "@/shared/lib/with-timeout";
 import type { LocalMessageStatus } from "@/shared/lib/local-db/schema";
 
@@ -2133,7 +2133,28 @@ export function useMessages() {
     }
   };
 
+  /** Cancel an in-flight or failed media upload */
+  const cancelMediaUpload = async (message: Message): Promise<void> => {
+    const mKey = (message as Message & { _key?: string })._key;
+    if (!mKey) return;
+    if (!isChatDbReady()) return;
+
+    const dbKit = getChatDb();
+    const localMsg = await dbKit.messages.getByClientId(mKey);
+    if (!localMsg) return;
+
+    // Can only cancel pending or failed uploads
+    if (localMsg.status !== "pending" && localMsg.status !== "failed") return;
+
+    // Abort HTTP request if in-flight
+    abortUpload(mKey);
+
+    // Force cleanup (in case abort didn't trigger catch — e.g. between phases)
+    await handleUploadCancelled(dbKit, mKey, localMsg.localBlobUrl);
+  };
+
   return {
+    cancelMediaUpload,
     deleteMessage,
     drainOfflineQueue,
     editMessage,
