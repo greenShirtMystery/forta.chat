@@ -443,6 +443,22 @@ export class MessageRepository {
       });
   }
 
+  /** Remove cancelled upload messages older than the cutoff (cleanup from previous sessions) */
+  async cleanupCancelledUploads(maxAgeMs = 5 * 60 * 1000): Promise<number> {
+    const cutoff = Date.now() - maxAgeMs;
+    const cancelled = await this.db.messages
+      .where("status")
+      .equals("cancelled")
+      .filter((m) => m.timestamp < cutoff)
+      .toArray();
+
+    if (cancelled.length === 0) return 0;
+
+    const ids = cancelled.map((m) => m.localId!).filter(Boolean);
+    await this.db.messages.bulkDelete(ids);
+    return ids.length;
+  }
+
   /** Get the room ID for a given event (used by sync engine) */
   async getRoomIdForEvent(eventId: string): Promise<string | undefined> {
     const msg = await this.getByEventId(eventId);
