@@ -140,6 +140,12 @@ export function initChatDb(
     if (count > 0) console.info(`[local-db] Recovered ${count} stuck media upload(s) → marked as failed`);
   }).catch(() => {});
 
+  messages.cleanupCancelledUploads()
+    .then((count) => {
+      if (count > 0) console.info(`[local-db] Cleaned up ${count} cancelled upload(s)`);
+    })
+    .catch(() => {});
+
   // Start processing any pending decryption jobs from previous session
   decryptionWorker.tick().catch(() => {});
 
