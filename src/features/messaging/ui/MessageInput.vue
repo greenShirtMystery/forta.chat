@@ -18,6 +18,8 @@ import { useVideoCircleRecorder } from "../model/use-video-circle-recorder";
 import { useMentionAutocomplete } from "../model/use-mention-autocomplete";
 import MentionAutocomplete from "./MentionAutocomplete.vue";
 import { useMobile } from "@/shared/lib/composables/use-media-query";
+import { shouldSendOnEnter } from "../model/enter-key-behavior";
+import { isNative } from "@/shared/lib/platform";
 
 const isMobile = useMobile();
 
@@ -191,7 +193,11 @@ const handleSend = async () => {
 
 const handleKeydown = (e: KeyboardEvent) => {
   if (mention.handleKeydown(e)) return;
-  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
+
+  if (shouldSendOnEnter({ key: e.key, shiftKey: e.shiftKey, isComposing: e.isComposing, isMobile: isMobile.value, isNative })) {
+    e.preventDefault();
+    handleSend();
+  }
 };
 
 const handleInput = () => {
