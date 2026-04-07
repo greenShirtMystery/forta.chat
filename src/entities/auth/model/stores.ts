@@ -401,6 +401,9 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
             }
           } else if (state === "ERROR" || state === "RECONNECTING") {
             console.warn(`[auth] Sync state: ${state}`);
+            chatStore.setSyncState(state);
+          } else if (state === "STOPPED") {
+            chatStore.setSyncState(state);
           }
           _onSyncStatusCallback?.(state);
         },

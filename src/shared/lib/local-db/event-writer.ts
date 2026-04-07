@@ -11,6 +11,7 @@ import {
 } from "@/entities/chat/model/types";
 import { WriteBuffer, type BufferedWrite } from "./write-buffer";
 import { perfMark, perfMeasure } from "@/shared/lib/perf-markers";
+import { tRaw } from "@/shared/lib/i18n";
 
 // ---------------------------------------------------------------------------
 // Types for parsed events coming from chat-store / Matrix SDK layer
@@ -205,11 +206,9 @@ export class EventWriter {
         }
 
         if (result === "inserted") {
-          // Increment unread for OTHER people's messages in NON-ACTIVE rooms
-          if (item.parsed.senderId !== item.myAddress && item.roomId !== item.activeRoomId) {
-            await this.db.rooms.where("id").equals(item.roomId)
-              .modify((room: import("./schema").LocalRoom) => { room.unreadCount++; });
-          }
+          // NOTE: unreadCount is NOT incremented here. Matrix SDK's
+          // getUnreadNotificationCount("total") is the single source of truth,
+          // synced to Dexie via bulkSyncRooms during room refresh cycles.
           changedRooms.add(item.roomId);
         }
       }
@@ -260,14 +259,9 @@ export class EventWriter {
         await this.updateRoomPreview(parsed);
       }
 
-      if (out.result === "inserted") {
-        // Only increment unread for OTHER people's messages in NON-ACTIVE rooms
-        if (parsed.senderId !== myAddress && parsed.roomId !== activeRoomId) {
-          // Atomic increment via modify() — no read-modify-write race
-          await this.db.rooms.where("id").equals(parsed.roomId)
-            .modify((room: import("./schema").LocalRoom) => { room.unreadCount++; });
-        }
-      }
+      // NOTE: unreadCount is NOT incremented here. Matrix SDK's
+      // getUnreadNotificationCount("total") is the single source of truth,
+      // synced to Dexie via bulkSyncRooms during room refresh cycles.
     });
 
     if (out.result === "inserted") {
@@ -610,13 +604,13 @@ export class EventWriter {
     content: string,
     transferAmount?: number,
   ): string {
-    if (type === MessageType.image) return "[photo]";
-    if (type === MessageType.video) return "[video]";
-    if (type === MessageType.audio) return "[voice message]";
-    if (type === MessageType.videoCircle) return "[video message]";
-    if (type === MessageType.file) return "[file]";
-    if (type === MessageType.poll) return "[poll]";
-    if (type === MessageType.transfer) return `[transfer] ${transferAmount ?? 0} PKOIN`;
+    if (type === MessageType.image) return tRaw("message.photo");
+    if (type === MessageType.video) return tRaw("message.video");
+    if (type === MessageType.audio) return tRaw("message.voiceMessage");
+    if (type === MessageType.videoCircle) return tRaw("message.videoMessage");
+    if (type === MessageType.file) return tRaw("message.file");
+    if (type === MessageType.poll) return tRaw("message.poll");
+    if (type === MessageType.transfer) return `${tRaw("message.transfer")} ${transferAmount ?? 0} PKOIN`;
     return content;
   }
 

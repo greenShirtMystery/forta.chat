@@ -221,12 +221,12 @@ describe("chat-store", () => {
       expect(store.rooms[0].name).toBe("New");
     });
 
-    it("setActiveRoom sets the active room id", () => {
+    it("setActiveRoom sets the active room id and clears unread", () => {
       store.addRoom(makeRoom({ id: "!r1:s", unreadCount: 5 }));
       store.setActiveRoom("!r1:s");
       expect(store.activeRoomId).toBe("!r1:s");
-      // Note: unreadCount is now cleared by IntersectionObserver, not setActiveRoom
-      expect(store.rooms[0].unreadCount).toBe(5);
+      // Self-healing: unreadCount is now cleared immediately on room open
+      expect(store.rooms[0].unreadCount).toBe(0);
     });
 
     it("setActiveRoom(null) clears active room", () => {

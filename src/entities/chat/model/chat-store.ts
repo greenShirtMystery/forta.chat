@@ -99,8 +99,9 @@ function matrixRoomToChatRoom(room: any, kit: MatrixKit, myUserId: string, nameH
   for (let i = timelineEvents.length - 1; i >= 0; i--) {
     const raw = getRawEvent(timelineEvents[i]);
     if (!raw) continue;
-    // Use timestamp from latest event (any type)
-    if (!lastTs && raw.origin_server_ts) {
+    // Use timestamp from latest content event — skip reactions, receipts,
+    // typing, and other ephemeral events that shouldn't affect room sort order.
+    if (!lastTs && raw.origin_server_ts && raw.type !== "m.reaction" && raw.type !== "m.receipt" && raw.type !== "m.typing" && raw.type !== "m.presence") {
       lastTs = raw.origin_server_ts as number;
     }
     // Find last actual message (including redacted/deleted)
@@ -331,6 +332,10 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       _msgWindowDebounceTimer = null;
     }, 200);
   });
+  // Generation counter for forcing liveQuery re-subscription after buffer flush.
+  // Bumped in setActiveRoom after flushWriteBuffer completes — ensures the liveQuery
+  // re-reads Dexie and picks up messages that landed during the re-subscription gap.
+  const _liveQueryGen = ref(0);
   const messages = shallowRef<Record<string, Message[]>>({});
   const typing = ref<Record<string, string[]>>({});
   const replyingTo = ref<ReplyTo | null>(null);
@@ -344,6 +349,10 @@ export const useChatStore = defineStore(NAMESPACE, () => {
   const roomsInitialized = ref(false);
   /** True after user profiles have been loaded for room members */
   const namesReady = ref(false);
+  /** Current Matrix sync state — updated from onSync callback via refreshRooms */
+  const syncState = ref<"PREPARED" | "SYNCING" | "ERROR" | "STOPPED" | "RECONNECTING" | null>(null);
+  /** True during initial sync or when connection is lost */
+  const isSyncing = computed(() => !roomsInitialized.value || syncState.value === "ERROR" || syncState.value === "RECONNECTING");
 
   // Cache for decrypted room previews — persists across refreshRooms() rebuilds
   const decryptedPreviewCache = new Map<string, string>();
@@ -644,7 +653,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         clearedAtTs,
       );
     },
-    () => [activeRoomId.value, debouncedMessageWindowSize.value, chatDbKitRef.value] as const,
+    () => [activeRoomId.value, debouncedMessageWindowSize.value, chatDbKitRef.value, _liveQueryGen.value] as const,
     [] as import("@/shared/lib/local-db").LocalMessage[],
   );
 
@@ -762,6 +771,8 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     name: string;
     membership: string;
     preview: string | null | undefined;
+    senderId: string;
+    eventId: string;
     localStatus: string | null | undefined;
     readOutboundTs: number;
     lastMsgDecryptionStatus: string | undefined;
@@ -783,6 +794,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     const localStatus = lr.lastMessageLocalStatus;
     const readOutboundTs = lr.lastReadOutboundTs ?? 0;
     const lastMsgDecryptionStatus = lr.lastMessageDecryptionStatus;
+    const lastMsgSenderId = lr.lastMessageSenderId ?? "";
     const cached = _chatRoomFromDexieCache.get(lr.id);
     if (
       cached &&
@@ -792,6 +804,8 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       cached.membership === lr.membership &&
       cached.room.avatar === lr.avatar &&
       cached.preview === effectivePreview &&
+      cached.senderId === lastMsgSenderId &&
+      cached.eventId === (lr.lastMessageEventId ?? "") &&
       cached.localStatus === localStatus &&
       cached.readOutboundTs === readOutboundTs &&
       cached.lastMsgDecryptionStatus === lastMsgDecryptionStatus
@@ -826,7 +840,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       } as Message : undefined,
       lastMessageReaction: lr.lastMessageReaction ?? undefined,
     } as ChatRoom;
-    _chatRoomFromDexieCache.set(lr.id, { ts, unread: lr.unreadCount, name: lr.name, membership: lr.membership, preview: effectivePreview, localStatus, readOutboundTs, lastMsgDecryptionStatus, room });
+    _chatRoomFromDexieCache.set(lr.id, { ts, unread: lr.unreadCount, name: lr.name, membership: lr.membership, preview: effectivePreview, senderId: lastMsgSenderId, eventId: lr.lastMessageEventId ?? "", localStatus, readOutboundTs, lastMsgDecryptionStatus, room });
     return room;
   };
 
@@ -834,8 +848,13 @@ export const useChatStore = defineStore(NAMESPACE, () => {
   // Incremental sort helpers
   // ---------------------------------------------------------------------------
 
-  const getSortKey = (room: ChatRoom): number =>
-    room.lastMessage?.timestamp || room.updatedAt || 0;
+  /** Sort key: use Dexie's lastMessageTimestamp as ground truth, not ChatRoom.lastMessage
+   *  which may be undefined when preview hasn't loaded yet. */
+  const getSortKey = (room: ChatRoom): number => {
+    const lr = dexieRoomMap.get(room.id);
+    if (lr) return lr.lastMessageTimestamp || lr.updatedAt || 0;
+    return room.lastMessage?.timestamp || room.updatedAt || 0;
+  };
 
   /** Binary search for insertion in descending-sorted array */
   const binarySearchDesc = (arr: ChatRoom[], key: number, pinned: ReadonlySet<string>, isPinned: boolean): number => {
@@ -1036,6 +1055,13 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     } else {
       patchSortedRooms(relevantChanges);
     }
+
+    // Check if any changed rooms just got their preview — stop polling for them
+    for (const c of relevantChanges) {
+      if (c.type === "upsert" && c.room.lastMessagePreview && loadingRooms.has(c.room.id)) {
+        stopPreviewPolling(c.room.id);
+      }
+    }
   };
 
   // Before Dexie init: rooms.value is the source of truth → sync fallback sort.
@@ -1068,7 +1094,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         await initDexieRooms(kit);
         await fullRebuildSortedRoomsAsync();
         // Self-heal unread counts on first load (deferred to not block UI)
-        queueMicrotask(() => healUnreadCounts());
+        queueMicrotask(() => syncAllUnreadFromMatrix());
       } else {
         dexieChangesUnsub?.();
         dexieChangesUnsub = null;
@@ -1133,6 +1159,80 @@ export const useChatStore = defineStore(NAMESPACE, () => {
   const pendingFetchQueue: PendingFetchItem[] = [];
 
   const roomFetchStates = reactive(new Map<string, RoomFetchState>());
+
+  // ---------------------------------------------------------------------------
+  // Preview loading state: rooms without lastMessagePreview show skeleton.
+  // Polling runs at store level (not component) so RecycleScroller recycling
+  // doesn't break it. 7 attempts × 1s, then gives up.
+  // ---------------------------------------------------------------------------
+  const loadingRooms = reactive(new Set<string>());
+  const _previewPollTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const _previewPollAttempts = new Map<string, number>();
+
+  /** Start polling for a room's preview to appear in Dexie. */
+  const startPreviewPolling = (roomId: string) => {
+    if (loadingRooms.has(roomId) || _previewPollTimers.has(roomId)) return;
+    const lr = dexieRoomMap.get(roomId);
+    if (lr?.lastMessagePreview) return; // already has data
+    loadingRooms.add(roomId);
+    _previewPollAttempts.set(roomId, 0);
+    _schedulePoll(roomId);
+  };
+
+  const _schedulePoll = (roomId: string) => {
+    const timer = setTimeout(() => {
+      _previewPollTimers.delete(roomId);
+      const lr = dexieRoomMap.get(roomId);
+      if (lr?.lastMessagePreview) {
+        // Data arrived — clean up
+        loadingRooms.delete(roomId);
+        _previewPollAttempts.delete(roomId);
+        return;
+      }
+      const attempts = (_previewPollAttempts.get(roomId) ?? 0) + 1;
+      _previewPollAttempts.set(roomId, attempts);
+      if (attempts >= 7) {
+        // Give up
+        loadingRooms.delete(roomId);
+        _previewPollAttempts.delete(roomId);
+        return;
+      }
+      _schedulePoll(roomId);
+    }, 1000);
+    _previewPollTimers.set(roomId, timer);
+  };
+
+  /** Stop polling for a room. */
+  const stopPreviewPolling = (roomId: string) => {
+    const timer = _previewPollTimers.get(roomId);
+    if (timer) {
+      clearTimeout(timer);
+      _previewPollTimers.delete(roomId);
+    }
+    _previewPollAttempts.delete(roomId);
+    loadingRooms.delete(roomId);
+  };
+
+  /** Scan rooms and start polling for any without preview. Called after room list changes. */
+  const syncPreviewPolling = () => {
+    const activePolling = new Set<string>();
+    for (const lr of dexieRoomMap.values()) {
+      if (lr.membership !== "join") continue;
+      if (!lr.lastMessagePreview && !lr.lastMessageEventId) continue; // truly empty
+      if (lr.lastMessagePreview) {
+        // Has preview — stop polling if running
+        if (_previewPollTimers.has(lr.id)) stopPreviewPolling(lr.id);
+        continue;
+      }
+      // Has eventId but no preview — needs polling
+      activePolling.add(lr.id);
+      startPreviewPolling(lr.id);
+    }
+    // Stop polling for rooms that now have preview or were removed
+    for (const roomId of _previewPollTimers.keys()) {
+      if (!activePolling.has(roomId)) stopPreviewPolling(roomId);
+    }
+  };
 
   /** Fetch room data for viewport preview: cache first, then network (loadRoomMessages).
    *  Checks generation between async steps — if the user scrolled away, aborts early. */
@@ -1973,6 +2073,17 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       // Delay lets the UI render the room list and decrypt previews first
       setTimeout(() => preloadVisibleRooms(), 500);
 
+      // Sync unread counts from Matrix SDK → Dexie after initial sync.
+      // Heals any stale/poisoned counts left from previous sessions.
+      // Delay 3s to let Matrix SDK settle after PREPARED state.
+      setTimeout(() => syncAllUnreadFromMatrix(), 3000);
+
+      // Fix rooms with missing timestamps (heals stale data from older bugs).
+      setTimeout(() => fixRoomTimestamps(), 4000);
+
+      // Start preview polling for rooms without preview after initial load
+      setTimeout(() => syncPreviewPolling(), 1500);
+
       // Schedule room cleanup 30s after init, then every 30 minutes
       scheduleRoomCleanup();
     }
@@ -1980,7 +2091,10 @@ export const useChatStore = defineStore(NAMESPACE, () => {
 
   /** Debounced refresh: batches multiple rapid calls into one (150ms window) */
   const refreshRooms = (state?: "PREPARED" | "SYNCING") => {
-    if (state) lastSyncState = state;
+    if (state) {
+      lastSyncState = state;
+      syncState.value = state;
+    }
     if (refreshDebounceTimer) clearTimeout(refreshDebounceTimer);
     refreshDebounceTimer = setTimeout(() => {
       refreshDebounceTimer = null;
@@ -1988,6 +2102,11 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       // Retry pending read watermarks — timeline may now have the events we need
       flushPendingReadWatermarks();
     }, 150);
+  };
+
+  /** Update sync state for non-refresh states (ERROR, RECONNECTING, STOPPED) */
+  const setSyncState = (state: "ERROR" | "STOPPED" | "RECONNECTING") => {
+    syncState.value = state;
   };
 
   /** Force immediate refresh (used after init when first load must be instant) */
@@ -2119,23 +2238,101 @@ export const useChatStore = defineStore(NAMESPACE, () => {
 
   /** Self-heal unread counts by recalculating from watermarks + actual messages.
    *  Called on app resume and after initial sync to fix any accumulated drift. */
-  const healUnreadCounts = () => {
-    if (!chatDbKitRef.value) return;
-    const myAddr = useAuthStore().address;
-    if (!myAddr) return;
-
+  /**
+   * Sync all unread counts from Matrix SDK → Dexie.
+   * Matrix SDK's getUnreadNotificationCount("total") is the single source of truth.
+   * This heals any poisoned counts left in Dexie from previous buggy increments.
+   */
+  const syncAllUnreadFromMatrix = async () => {
     const dbKit = chatDbKitRef.value;
-    dbKit.rooms.recalculateAllUnreadCounts(
-      myAddr,
-      (roomId, afterTs, excludeSenderId, clearedAtTs?) =>
-        dbKit.messages.countInboundAfter(roomId, afterTs, excludeSenderId, clearedAtTs),
-    ).then(corrected => {
-      if (corrected > 0) {
-        console.log(`[chat-store] self-healed unreadCount for ${corrected} room(s)`);
+    if (!dbKit) return;
+    const matrixService = getMatrixClientService();
+    if (!matrixService.isReady()) return;
+
+    try {
+      const matrixRooms = matrixService.getRooms() as any[];
+      const updates: Array<{ id: string; count: number }> = [];
+
+      for (const mxRoom of matrixRooms) {
+        const roomId = mxRoom.roomId as string;
+        const serverCount: number = (mxRoom.getUnreadNotificationCount?.("total") as number) ?? 0;
+        const localRoom = dexieRoomMap.get(roomId);
+        if (localRoom && localRoom.unreadCount !== serverCount) {
+          updates.push({ id: roomId, count: serverCount });
+        }
       }
-    }).catch(e => {
-      console.warn("[chat-store] healUnreadCounts failed:", e);
-    });
+
+      if (updates.length === 0) return;
+
+      // Bulk update Dexie
+      await dbKit.db.transaction("rw", dbKit.db.rooms, async () => {
+        for (const { id, count } of updates) {
+          await dbKit.db.rooms.update(id, { unreadCount: count });
+        }
+      });
+
+      console.log(`[chat-store] synced unreadCount from Matrix for ${updates.length} room(s)`);
+
+      // Force delta propagation so UI updates immediately
+      _dexieRoomMapVersion.value++;
+      for (const { id, count } of updates) {
+        const lr = dexieRoomMap.get(id);
+        if (lr) {
+          lr.unreadCount = count;
+          patchSortedRooms([{ type: "upsert", room: lr }]);
+        }
+      }
+    } catch (e) {
+      console.warn("[chat-store] syncAllUnreadFromMatrix failed:", e);
+    }
+  };
+
+  /**
+   * Fix rooms with missing/zero lastMessageTimestamp by looking up the latest
+   * message in Dexie. Heals stale data from previous bugs or incomplete syncs.
+   */
+  const fixRoomTimestamps = async () => {
+    const dbKit = chatDbKitRef.value;
+    if (!dbKit) return;
+
+    try {
+      const fixes: Array<{ id: string; ts: number }> = [];
+      for (const lr of dexieRoomMap.values()) {
+        if (lr.lastMessageTimestamp && lr.lastMessageTimestamp > 0) continue;
+        // Room has no timestamp — look up last message from Dexie messages table
+        const lastMsg = await dbKit.db.messages
+          .where("[roomId+timestamp]")
+          .between([lr.id, 0], [lr.id, Infinity])
+          .last();
+        if (lastMsg?.timestamp) {
+          fixes.push({ id: lr.id, ts: lastMsg.timestamp });
+        }
+      }
+      if (fixes.length === 0) return;
+
+      await dbKit.db.transaction("rw", dbKit.db.rooms, async () => {
+        for (const { id, ts } of fixes) {
+          await dbKit.db.rooms.update(id, {
+            lastMessageTimestamp: ts,
+            updatedAt: ts,
+          });
+        }
+      });
+
+      // Update in-memory map + trigger re-sort
+      for (const { id, ts } of fixes) {
+        const lr = dexieRoomMap.get(id);
+        if (lr) {
+          lr.lastMessageTimestamp = ts;
+          lr.updatedAt = Math.max(lr.updatedAt ?? 0, ts);
+          patchSortedRooms([{ type: "upsert", room: lr }]);
+        }
+      }
+      _dexieRoomMapVersion.value++;
+      console.log(`[chat-store] fixed timestamps for ${fixes.length} room(s)`);
+    } catch (e) {
+      console.warn("[chat-store] fixRoomTimestamps failed:", e);
+    }
   };
 
   // Listen for visibility changes to send pending read receipts
@@ -2179,7 +2376,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
           flushPendingReadWatermarks();
 
           // 4. Self-heal unread counts — fix any drift accumulated during suspension
-          healUnreadCounts();
+          syncAllUnreadFromMatrix();
         }
       });
     }).catch(() => {});
@@ -2299,11 +2496,17 @@ export const useChatStore = defineStore(NAMESPACE, () => {
   const setActiveRoom = (roomId: string | null) => {
     perfMark("setActiveRoom-start");
     // Flush buffered background writes before switching rooms.
-    // Fire-and-forget: setActiveRoom is synchronous, but flush is best-effort.
-    // The liveQuery will pick up any stragglers on the next Dexie notification.
-    chatDbKitRef.value?.eventWriter.flushWriteBuffer();
+    // After flush completes, bump _liveQueryGen to force liveQuery re-subscribe.
+    // This closes the race where buffered messages land in Dexie during the
+    // re-subscription gap and would otherwise be missed until the next mutation.
+    const flushPromise = chatDbKitRef.value?.eventWriter.flushWriteBuffer();
     activeRoomId.value = roomId;
     messageWindowSize.value = 50; // Reset pagination window
+    if (flushPromise && roomId) {
+      flushPromise.then(() => {
+        if (activeRoomId.value === roomId) _liveQueryGen.value++;
+      }).catch(() => {});
+    }
     if (roomId) {
       // Load profiles only if not already loaded (removed unconditional delete
       // that caused re-fetching already-cached profiles on every room open)
@@ -2370,8 +2573,33 @@ export const useChatStore = defineStore(NAMESPACE, () => {
         selfHealZombieRoom(roomId);
       }
 
-      // NOTE: Do NOT mark as read here. Reading happens incrementally
-      // via IntersectionObserver in MessageList as user scrolls.
+      // Self-healing: unconditionally clear unread badge on room open.
+      // IntersectionObserver (useReadTracker) still advances the watermark
+      // for correct cross-device sync, but the badge clears instantly.
+      // This heals poisoned counts from EventWriter inflation during initial sync.
+      // Use lastMessage timestamp (not Date.now()) so the watermark doesn't
+      // leapfrog messages that arrive between room-open and actual scroll.
+      if (chatDbKitRef.value) {
+        const lastMsgTs = getRoomById(roomId)?.lastMessage?.timestamp
+          ?? dexieRoomMap.get(roomId)?.lastMessageTimestamp
+          ?? Date.now();
+        chatDbKitRef.value.rooms.markAsRead(
+          roomId,
+          lastMsgTs,
+        ).catch(() => {});
+      }
+      // Also clear in-memory immediately so sidebar updates without waiting for Dexie delta
+      const inMemRoom = getRoomById(roomId);
+      if (inMemRoom && inMemRoom.unreadCount > 0) {
+        inMemRoom.unreadCount = 0;
+        // Patch sortedRooms so sidebar reflects change instantly
+        const dexieRoom = dexieRoomMap.get(roomId);
+        if (dexieRoom && dexieRoom.unreadCount > 0) {
+          dexieRoom.unreadCount = 0;
+          _dexieRoomMapVersion.value++;
+          patchSortedRooms([{ type: "upsert", room: dexieRoom }]);
+        }
+      }
     }
     perfMark("setActiveRoom-end");
     perfMeasure("setActiveRoom", "setActiveRoom-start", "setActiveRoom-end");
@@ -5257,6 +5485,12 @@ export const useChatStore = defineStore(NAMESPACE, () => {
       rooms.value = cachedRooms;
       rebuildRoomsMap();
       namesReady.value = true; // Dexie has resolved names from previous session
+
+      // Eagerly load profiles for the first viewport of cached rooms.
+      // loadCachedRooms runs BEFORE Matrix sync, so without this the user sees
+      // raw addresses until fullRoomRefresh triggers loadProfilesForRoomIds.
+      const viewportIds = cachedRooms.slice(0, 15).map(r => r.id);
+      if (viewportIds.length > 0) loadProfilesForRoomIds(viewportIds);
     } catch (e) {
       console.warn("[chat-store] loadCachedRooms failed:", e);
     }
@@ -5352,6 +5586,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     isDetachedFromLatest.value = false;
     roomsInitialized.value = false;
     namesReady.value = false;
+    syncState.value = null;
     editingMessage.value = null;
     deletingMessage.value = null;
     userDisplayNames.value = {};
@@ -5442,6 +5677,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     preloadVisibleRooms,
     ensureRoomsLoaded,
     roomFetchStates,
+    loadingRooms,
     retryRoomFetch,
     cyclePinnedMessage,
     refreshRooms,
@@ -5450,6 +5686,9 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     removeRoom,
     roomsInitialized,
     namesReady,
+    syncState,
+    isSyncing,
+    setSyncState,
     replyingTo,
     rooms,
     selectedMessageIds,
@@ -5482,6 +5721,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     setChatDbKit,
     getDbKit,
     dexieMessagesReady,
+    dexieRoomMap,
     dexieRoomsReady,
     expandMessageWindow,
     messageWindowSize,
