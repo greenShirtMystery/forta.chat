@@ -139,19 +139,13 @@ export class RoomRepository {
             || (update.avatar !== undefined && update.avatar !== prev.avatar)
             || (update.membership !== undefined && update.membership !== prev.membership)
             || (update.topic !== undefined && update.topic !== prev.topic);
-          // Cross-device reconciliation: only trust server's "0 unread" when:
-          // 1. Room was previously synced (not a first-time seed from Matrix SDK)
-          // 2. There are no messages newer than the read watermark
-          //    (prevents race where EventWriter already incremented unread
-          //     but Matrix SDK's getUnreadNotificationCount() hasn't caught up)
-          const hasUnreadAfterWatermark = (prev.lastMessageTimestamp ?? 0) > (prev.lastReadInboundTs ?? 0);
-          const unreadReconcile = update.serverUnreadCount === 0
-            && (prev.unreadCount ?? 0) > 0
-            && (prev.syncedAt ?? 0) > 0
-            && !hasUnreadAfterWatermark;
+          // Unread reconciliation: Matrix SDK is the single source of truth.
+          // EventWriter does NOT touch unreadCount — so serverUnreadCount is always authoritative.
+          const unreadChanged = update.serverUnreadCount !== undefined
+            && (prev.unreadCount ?? 0) !== update.serverUnreadCount;
           const needsRevive = prev.isDeleted;
 
-          if (!tsAdvanced && !metaChanged && !unreadReconcile && !needsRevive) {
+          if (!tsAdvanced && !metaChanged && !unreadChanged && !needsRevive) {
             continue; // Skip unchanged room — avoid unnecessary Dexie write
           }
 
@@ -188,14 +182,16 @@ export class RoomRepository {
             patched.deleteReason = null;
           }
 
-          // Cross-device unread reconciliation: if server says 0 unread
-          // but local Dexie still has >0, another device read them.
-          if (unreadReconcile) {
-            patched.unreadCount = 0;
-            // Advance inbound watermark so future counts are correct
-            const latestTs = prev.lastMessageTimestamp ?? prev.updatedAt ?? 0;
-            if (latestTs > (prev.lastReadInboundTs ?? 0)) {
-              patched.lastReadInboundTs = latestTs;
+          // Matrix SDK is the single source of truth for unread counts.
+          // Always overwrite local count with server value.
+          if (unreadChanged) {
+            patched.unreadCount = update.serverUnreadCount!;
+            // When server says 0, advance watermark so local state stays consistent
+            if (update.serverUnreadCount === 0) {
+              const latestTs = prev.lastMessageTimestamp ?? prev.updatedAt ?? 0;
+              if (latestTs > (prev.lastReadInboundTs ?? 0)) {
+                patched.lastReadInboundTs = latestTs;
+              }
             }
           }
 

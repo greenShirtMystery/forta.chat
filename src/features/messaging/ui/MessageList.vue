@@ -222,7 +222,9 @@ const virtualItems = computed<VirtualItem[]>(() => {
   for (let i = 0; i < msgs.length; i++) {
     const msg = msgs[i];
 
-    // Skip ghost messages: no content, no media, not deleted, not system
+    // Skip ghost messages: no content, no media, not deleted, not system.
+    // NEVER skip messages with pending/failed decryption — they must remain visible
+    // so the user sees that a new message exists (shown as "[encrypted]" placeholder).
     if (
       !msg.deleted &&
       !msg.content &&
@@ -230,7 +232,8 @@ const virtualItems = computed<VirtualItem[]>(() => {
       !msg.pollInfo &&
       !msg.callInfo &&
       !msg.transferInfo &&
-      msg.type !== "system"
+      msg.type !== "system" &&
+      !msg.decryptionStatus
     ) {
       if (import.meta.env.DEV) {
         console.warn("[MessageList] ghost message filtered:", msg.id, msg.senderId, msg.status);
@@ -1104,11 +1107,11 @@ defineExpose({ scrollToMessage, setSearchQuery });
          Also show skeleton when load hasn't been attempted yet (prevents empty state flash).
          Show skeleton when settled=false to cover the gap where scroller has opacity:0.
          Never during pagination (expandMessageWindow / loadMoreMessages) to avoid skeleton flash. -->
-    <MessageSkeleton v-if="((loading || switching || !loadEverAttempted || !settled) && chatStore.activeMessages.length === 0)" />
+    <MessageSkeleton v-if="((loading || switching || !loadEverAttempted || !settled || chatStore.isSyncing) && chatStore.activeMessages.length === 0)" />
 
     <!-- Empty state (only after fully loaded + settled + load was attempted, not during switching) -->
     <div
-      v-if="!loading && !switching && loadEverAttempted && chatStore.activeMessages.length === 0 && settled"
+      v-if="!loading && !switching && loadEverAttempted && !chatStore.isSyncing && chatStore.activeMessages.length === 0 && settled"
       class="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 text-text-on-main-bg-color"
     >
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" class="opacity-20">

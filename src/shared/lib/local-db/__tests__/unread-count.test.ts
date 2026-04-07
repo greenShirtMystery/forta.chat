@@ -90,11 +90,10 @@ const countFn = (roomId: string, afterTs: number, excludeSenderId: string, clear
 
 // ─── Fix 1: bulkSyncRooms reconciliation guard ────────────────────────────
 
-describe("bulkSyncRooms unread reconciliation", () => {
+describe("bulkSyncRooms — server unreadCount is always authoritative", () => {
   beforeEach(setup);
 
-  it("zeroes unreadCount when server=0 and no messages after watermark", async () => {
-    // Room read up to ts=2000, no newer messages → server 0 is trustworthy
+  it("always overwrites local unreadCount with server value", async () => {
     await db.rooms.put(makeRoom({
       id: "!r1:test",
       unreadCount: 3,
@@ -113,14 +112,15 @@ describe("bulkSyncRooms unread reconciliation", () => {
     expect(room!.unreadCount).toBe(0);
   });
 
-  it("preserves unreadCount when messages exist after watermark", async () => {
-    // Room has messages after watermark → server 0 may be stale
+  it("overwrites even when messages exist after watermark (server is truth)", async () => {
+    // Server says 0 — even though local has messages after watermark.
+    // This is correct: server knows the real read state across all devices.
     await db.rooms.put(makeRoom({
       id: "!r2:test",
       unreadCount: 5,
       syncedAt: 1000,
       lastReadInboundTs: 1000,
-      lastMessageTimestamp: 2000, // newer than watermark!
+      lastMessageTimestamp: 2000,
     }));
 
     await roomRepo.bulkSyncRooms([{
@@ -130,14 +130,13 @@ describe("bulkSyncRooms unread reconciliation", () => {
     }]);
 
     const room = await db.rooms.get("!r2:test");
-    expect(room!.unreadCount).toBe(5);
+    expect(room!.unreadCount).toBe(0); // server is always authoritative
   });
 
-  it("preserves unreadCount for never-synced rooms (syncedAt=0)", async () => {
-    // Room never synced before → server value is unreliable
+  it("heals poisoned counts from fresh rooms (syncedAt=0)", async () => {
     await db.rooms.put(makeRoom({
       id: "!r3:test",
-      unreadCount: 2,
+      unreadCount: 28,
       syncedAt: 0,
       lastReadInboundTs: 0,
       lastMessageTimestamp: 1000,
@@ -145,12 +144,32 @@ describe("bulkSyncRooms unread reconciliation", () => {
 
     await roomRepo.bulkSyncRooms([{
       id: "!r3:test",
-      serverUnreadCount: 0,
+      serverUnreadCount: 3,
       updatedAt: Date.now(),
     }]);
 
     const room = await db.rooms.get("!r3:test");
-    expect(room!.unreadCount).toBe(2);
+    expect(room!.unreadCount).toBe(3);
+  });
+
+  it("advances watermark when server says 0", async () => {
+    await db.rooms.put(makeRoom({
+      id: "!r4:test",
+      unreadCount: 15,
+      syncedAt: 0,
+      lastReadInboundTs: 0,
+      lastMessageTimestamp: 5000,
+    }));
+
+    await roomRepo.bulkSyncRooms([{
+      id: "!r4:test",
+      serverUnreadCount: 0,
+      updatedAt: Date.now(),
+    }]);
+
+    const room = await db.rooms.get("!r4:test");
+    expect(room!.unreadCount).toBe(0);
+    expect(room!.lastReadInboundTs).toBe(5000);
   });
 });
 
@@ -329,5 +348,127 @@ describe("recalculateAllUnreadCounts", () => {
     const r2 = await db.rooms.get("!r2:test");
     expect(r1!.unreadCount).toBe(0);
     expect(r2!.unreadCount).toBe(2);
+  });
+});
+
+// ─── EventWriter does NOT touch unreadCount ──────────────────────────────
+// Matrix SDK's getUnreadNotificationCount("total") is the single source of truth.
+// EventWriter only writes messages + room previews, never increments unread.
+
+describe("EventWriter never modifies unreadCount", () => {
+  beforeEach(setup);
+
+  it("does not change unreadCount when writing inbound messages", async () => {
+    const { EventWriter } = await import("../event-writer");
+    const { UserRepository } = await import("../user-repository");
+    const userRepo = new UserRepository(db as any);
+    const ew = new EventWriter(db as any, msgRepo, roomRepo, userRepo);
+
+    await db.rooms.put(makeRoom({ id: "!r:test", unreadCount: 0 }));
+
+    await ew.writeMessage(
+      {
+        eventId: "$msg1",
+        roomId: "!r:test",
+        senderId: "alice",
+        content: "hello",
+        timestamp: Date.now(),
+        type: MessageType.text,
+      },
+      "me",
+      "!other",
+    );
+
+    const room = await db.rooms.get("!r:test");
+    expect(room!.unreadCount).toBe(0); // EventWriter never increments
+  });
+
+  it("preserves existing unreadCount when writing messages", async () => {
+    const { EventWriter } = await import("../event-writer");
+    const { UserRepository } = await import("../user-repository");
+    const userRepo = new UserRepository(db as any);
+    const ew = new EventWriter(db as any, msgRepo, roomRepo, userRepo);
+
+    await db.rooms.put(makeRoom({ id: "!r:test", unreadCount: 5 }));
+
+    await ew.writeMessage(
+      {
+        eventId: "$msg2",
+        roomId: "!r:test",
+        senderId: "alice",
+        content: "another message",
+        timestamp: Date.now(),
+        type: MessageType.text,
+      },
+      "me",
+      "!other",
+    );
+
+    const room = await db.rooms.get("!r:test");
+    expect(room!.unreadCount).toBe(5); // unchanged — only Matrix SDK updates it
+  });
+});
+
+// ─── bulkSyncRooms: server unreadCount is always authoritative ───────────
+
+describe("bulkSyncRooms server unread authority", () => {
+  beforeEach(setup);
+
+  it("overwrites local unreadCount with server value", async () => {
+    await db.rooms.put(makeRoom({
+      id: "!r:test",
+      unreadCount: 44, // poisoned from old bug
+      syncedAt: 1000,
+      lastReadInboundTs: 2000,
+      lastMessageTimestamp: 2000,
+    }));
+
+    await roomRepo.bulkSyncRooms([{
+      id: "!r:test",
+      serverUnreadCount: 2,
+      updatedAt: Date.now(),
+    }]);
+
+    const room = await db.rooms.get("!r:test");
+    expect(room!.unreadCount).toBe(2);
+  });
+
+  it("zeroes unreadCount and advances watermark when server says 0", async () => {
+    await db.rooms.put(makeRoom({
+      id: "!r:test",
+      unreadCount: 30,
+      syncedAt: 1000,
+      lastReadInboundTs: 1000,
+      lastMessageTimestamp: 5000,
+    }));
+
+    await roomRepo.bulkSyncRooms([{
+      id: "!r:test",
+      serverUnreadCount: 0,
+      updatedAt: Date.now(),
+    }]);
+
+    const room = await db.rooms.get("!r:test");
+    expect(room!.unreadCount).toBe(0);
+    expect(room!.lastReadInboundTs).toBe(5000); // watermark advanced
+  });
+
+  it("skips write when server count matches local", async () => {
+    await db.rooms.put(makeRoom({
+      id: "!r:test",
+      unreadCount: 3,
+      syncedAt: 1000,
+      lastMessageTimestamp: 2000,
+    }));
+
+    await roomRepo.bulkSyncRooms([{
+      id: "!r:test",
+      serverUnreadCount: 3,
+      updatedAt: 2000, // same timestamp — no change
+    }]);
+
+    // No write should have happened (count identical, no ts advance)
+    const room = await db.rooms.get("!r:test");
+    expect(room!.unreadCount).toBe(3);
   });
 });

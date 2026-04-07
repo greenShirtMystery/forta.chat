@@ -240,17 +240,25 @@ function getPreview(room: ChatRoom): DisplayResult {
       t("message.notDecrypted"),
     );
   }
-  // Show skeleton while data is still loading — not "no messages"
-  // 1. Initial sync not complete — rooms from Dexie cache but lastMessage not yet populated
-  if (!chatStore.roomsInitialized) return { state: "resolving", text: "" };
-  // 2. Names/profiles still loading (first sync display names phase)
-  if (!chatStore.namesReady) return { state: "resolving", text: "" };
-  // 3. Viewport-fetch is actively loading messages for this room
-  const fetchState = chatStore.roomFetchStates.get(room.id);
-  if (fetchState?.status === "loading") return { state: "resolving", text: "" };
-  // 4. Room has recent activity but no lastMessage — likely still syncing
-  if (room.updatedAt && room.updatedAt > Date.now() - 60_000) return { state: "resolving", text: "" };
+  // No lastMessage and no in-memory messages.
+  // Determine skeleton vs "No messages" from Dexie ground truth:
+  //   - lastMessageEventId EXISTS → data is in transit (decrypt/fetch) → skeleton
+  //   - lastMessageEventId ABSENT → truly empty chat → "No messages"
+  const dexieRoom = chatStore.dexieRoomMap.get(room.id);
+  if (dexieRoom?.lastMessageEventId) {
+    return { state: "resolving", text: "" };
+  }
   return { state: "ready", text: t("contactList.noMessages") };
+}
+
+/** Get the best available timestamp for a room (for sidebar display).
+ *  Falls back to Dexie lastMessageTimestamp → updatedAt when ChatRoom.lastMessage is absent. */
+function getRoomTimestamp(room: ChatRoom): number | null {
+  if (room.lastMessage?.timestamp) return room.lastMessage.timestamp;
+  // Fallback: Dexie knows the timestamp even when ChatRoom.lastMessage hasn't been built
+  const lr = chatStore.dexieRoomMap.get(room.id);
+  const ts = lr?.lastMessageTimestamp || lr?.updatedAt || room.updatedAt;
+  return ts && ts > 0 ? ts : null;
 }
 
 /** Check if room data fetch is in error state (for retry UI) */
@@ -384,23 +392,36 @@ type UnifiedItem = (ChatRoom | Channel) & { _key: string; _title?: DisplayResult
 
 // Cache UnifiedItem objects by room id + version to reduce GC pressure.
 // Only create a new object when the room's display-affecting fields change.
-const _unifiedItemCache = new Map<string, { ts: number; unread: number; name: string; membership: string; msgStatus: string; preview: string; item: UnifiedItem }>();
+// IMPORTANT: resolvedName is included in the cache key so that background profile
+// loading (triggerRef on userStore.users → roomNameMap recompute) invalidates
+// stale titles that were computed before profiles arrived.
+const _unifiedItemCache = new Map<string, { ts: number; unread: number; name: string; membership: string; msgStatus: string; preview: string; resolvedName: string; decryptionStatus: string; senderId: string; avatar: string; item: UnifiedItem }>();
 
 const allFilteredRooms = computed<UnifiedItem[]>(() => {
   const rooms = chatStore.sortedRooms;
-  // roomNameMap dependency is consumed by toItem → getRoomTitle → resolveRoomName
+  // Read roomNameMap eagerly to maintain reactive dependency even on cache-hit paths.
+  // Without this, Vue drops the dependency after first all-hit evaluation.
+  const nameMap = roomNameMap.value;
   const toItem = (r: ChatRoom): UnifiedItem => {
     const ts = r.lastMessage?.timestamp ?? r.updatedAt ?? 0;
     const msgStatus = r.lastMessage?.status ?? "";
     const preview = r.lastMessage?.content ?? "";
+    const resolvedName = nameMap[r.id] ?? "";
+    const decryptionStatus = r.lastMessage?.decryptionStatus ?? "";
+    const senderId = r.lastMessage?.senderId ?? "";
+    const avatar = r.avatar ?? "";
     const cached = _unifiedItemCache.get(r.id);
     if (cached && cached.ts === ts && cached.unread === r.unreadCount
         && cached.name === r.name && cached.membership === (r.membership ?? "join")
-        && cached.msgStatus === msgStatus && cached.preview === preview) {
+        && cached.msgStatus === msgStatus && cached.preview === preview
+        && cached.resolvedName === resolvedName
+        && cached.decryptionStatus === decryptionStatus
+        && cached.senderId === senderId
+        && cached.avatar === avatar) {
       return cached.item;
     }
     const item: UnifiedItem = { ...r, _key: r.id, _title: getRoomTitle(r) };
-    _unifiedItemCache.set(r.id, { ts, unread: r.unreadCount, name: r.name, membership: r.membership ?? "join", msgStatus, preview, item });
+    _unifiedItemCache.set(r.id, { ts, unread: r.unreadCount, name: r.name, membership: r.membership ?? "join", msgStatus, preview, resolvedName, decryptionStatus, senderId, avatar, item });
     return item;
   };
 
@@ -471,8 +492,9 @@ const loadVisibleRooms = () => {
   if (!el) return;
   const { scrollTop, clientHeight } = el;
 
-  // During tab transition clientHeight may be 0 — retry when layout settles
-  if (clientHeight === 0 && _layoutRetries < 10) {
+  // During tab transition clientHeight may be 0 — retry when layout settles.
+  // 20 frames (~333ms at 60fps) covers most CSS transitions.
+  if (clientHeight === 0 && _layoutRetries < 20) {
     _layoutRetries++;
     requestAnimationFrame(loadVisibleRooms);
     return;
@@ -565,6 +587,38 @@ watch(scrollerRef, (val) => {
   attachScrollListener();
   if (val) nextTick(loadVisibleRooms);
 });
+
+// Eagerly load profiles for ALL rooms in the list whenever it changes.
+// This replaces the scroll-dependent loadVisibleRooms for profile loading —
+// profiles are cheap (user data lookups) and loadProfilesForRoomIds deduplicates
+// via profilesRequestedForRooms. This ensures names resolve without scrolling.
+watch(
+  filteredRooms,
+  (rooms) => {
+    const roomIds: string[] = [];
+    for (const r of rooms) {
+      if (!isChannel(r)) roomIds.push(r.id);
+    }
+    if (roomIds.length > 0) {
+      chatStore.loadProfilesForRoomIds(roomIds);
+    }
+  },
+  { immediate: true },
+);
+
+// When rooms first appear (0 → N), guarantee viewport loading even if
+// RecycleScroller layout wasn't settled during onMounted / scrollerRef watch.
+// Uses setTimeout to give the scroller time to measure and render items.
+let _roomsAppearedOnce = false;
+watch(
+  () => filteredRooms.value.length,
+  (len) => {
+    if (len > 0 && !_roomsAppearedOnce) {
+      _roomsAppearedOnce = true;
+      setTimeout(loadVisibleRooms, 200);
+    }
+  },
+);
 onUnmounted(() => {
   scrollEl?.removeEventListener("scroll", onScrollerScroll);
   longPressCache.clear();
@@ -658,8 +712,19 @@ const onRoomContextMenu = (e: MouseEvent, room: ChatRoom) => {
 
 <template>
   <div class="flex flex-col">
+    <!-- Skeleton placeholder during initial sync -->
+    <div v-if="filteredRooms.length === 0 && chatStore.isSyncing" class="flex flex-col">
+      <div v-for="i in 6" :key="i" class="flex h-[68px] w-full items-center gap-3 px-3 py-2.5 animate-pulse">
+        <div class="h-10 w-10 shrink-0 rounded-full bg-neutral-grad-0" />
+        <div class="flex min-w-0 flex-1 flex-col gap-1.5">
+          <div class="h-3.5 w-2/5 rounded bg-neutral-grad-0" />
+          <div class="h-3 w-3/5 rounded bg-neutral-grad-0" />
+        </div>
+      </div>
+    </div>
+
     <div
-      v-if="filteredRooms.length === 0 && chatStore.roomsInitialized"
+      v-else-if="filteredRooms.length === 0 && chatStore.roomsInitialized"
       class="flex flex-col items-center gap-3 px-6 py-12 text-center"
     >
       <div class="flex h-14 w-14 items-center justify-center rounded-full bg-neutral-grad-0">
@@ -792,15 +857,15 @@ const onRoomContextMenu = (e: MouseEvent, room: ChatRoom) => {
                 </svg>
               </span>
               <span
-                v-if="(item as ChatRoom).lastMessage"
+                v-if="getRoomTimestamp(item as ChatRoom)"
                 class="flex shrink-0 items-center gap-0.5 text-xs"
                 :class="(item as ChatRoom).unreadCount > 0 ? 'text-color-bg-ac' : 'text-text-on-main-bg-color'"
               >
                 <MessageStatusIcon
-                  v-if="(item as ChatRoom).lastMessage!.senderId === authStore.address && (item as ChatRoom).lastMessage!.type !== MessageType.system && (item as ChatRoom).lastMessage!.content !== ''"
+                  v-if="(item as ChatRoom).lastMessage?.senderId === authStore.address && (item as ChatRoom).lastMessage!.type !== MessageType.system && (item as ChatRoom).lastMessage!.content !== ''"
                   :status="(item as ChatRoom).lastMessage!.status"
                 />
-                {{ formatRelativeTime(new Date((item as ChatRoom).lastMessage!.timestamp)) }}
+                {{ formatRelativeTime(new Date(getRoomTimestamp(item as ChatRoom)!)) }}
               </span>
             </div>
 
