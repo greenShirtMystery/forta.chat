@@ -1,47 +1,27 @@
 /**
  * Pure logic for computing effective keyboard height.
  * Extracted from App.vue for testability.
+ *
+ * With adjustNothing, the OS does NOT resize the WebView when the keyboard
+ * opens — our CSS padding-bottom is the sole mechanism that lifts content.
+ * This eliminates the "double-push" conflict that existed with adjustResize.
  */
-
-export interface KeyboardHeightState {
-  baseInnerHeight: number;
-}
 
 export interface KeyboardHeightInput {
   isNativeEvent: boolean;
   nativeKbh: number;
   webKbh: number;
-  innerHeight: number;
-}
-
-export interface KeyboardHeightResult {
-  kbh: number;
-  baseInnerHeight: number;
 }
 
 /**
- * Compute the effective keyboard height, applying anti-double-push logic.
+ * Compute the effective keyboard height.
  *
- * - Native events are authoritative — anti-double-push is skipped.
- * - For visualViewport events, if innerHeight shrank significantly,
- *   Android adjustResize is already handling it — we return 0.
+ * - Native events (from WindowInsets via MainActivity.kt) are authoritative.
+ * - For visualViewport events (web fallback), take the larger of web/native.
  */
-export function computeKeyboardHeight(
-  state: KeyboardHeightState,
-  input: KeyboardHeightInput,
-): KeyboardHeightResult {
-  const { isNativeEvent, nativeKbh, webKbh, innerHeight } = input;
-
-  let kbh = isNativeEvent ? nativeKbh : Math.max(webKbh, nativeKbh);
-  let baseInnerHeight = state.baseInnerHeight;
-
-  if (kbh === 0) {
-    baseInnerHeight = innerHeight;
-  } else if (!isNativeEvent && innerHeight < baseInnerHeight - 50) {
-    kbh = 0;
-  }
-
-  return { kbh, baseInnerHeight };
+export function computeKeyboardHeight(input: KeyboardHeightInput): number {
+  if (input.isNativeEvent) return input.nativeKbh;
+  return Math.max(input.webKbh, input.nativeKbh);
 }
 
 /**
