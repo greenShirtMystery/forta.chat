@@ -2,68 +2,26 @@ import { describe, it, expect } from "vitest";
 import { computeKeyboardHeight, shouldScrollIntoView } from "./keyboard-height";
 
 describe("computeKeyboardHeight", () => {
-  const base = { baseInnerHeight: 800 };
-
   it("returns native kbh for native events", () => {
-    const result = computeKeyboardHeight(base, {
-      isNativeEvent: true,
-      nativeKbh: 280,
-      webKbh: 0,
-      innerHeight: 800,
-    });
-    expect(result.kbh).toBe(280);
+    expect(computeKeyboardHeight({ isNativeEvent: true, nativeKbh: 280, webKbh: 0 })).toBe(280);
   });
 
-  it("native event bypasses anti-double-push even when innerHeight shrank", () => {
-    const result = computeKeyboardHeight(base, {
-      isNativeEvent: true,
-      nativeKbh: 280,
-      webKbh: 0,
-      innerHeight: 520, // shrank by 280 — adjustResize active
-    });
-    // Should still return 280, not 0
-    expect(result.kbh).toBe(280);
-  });
-
-  it("anti-double-push zeroes kbh for non-native event when innerHeight shrank", () => {
-    const result = computeKeyboardHeight(base, {
-      isNativeEvent: false,
-      nativeKbh: 0,
-      webKbh: 280,
-      innerHeight: 520,
-    });
-    expect(result.kbh).toBe(0);
+  it("returns native kbh=0 when keyboard closes via native event", () => {
+    expect(computeKeyboardHeight({ isNativeEvent: true, nativeKbh: 0, webKbh: 100 })).toBe(0);
   });
 
   it("uses max(webKbh, nativeKbh) for non-native events", () => {
-    const result = computeKeyboardHeight(base, {
-      isNativeEvent: false,
-      nativeKbh: 250,
-      webKbh: 280,
-      innerHeight: 800,
-    });
-    expect(result.kbh).toBe(280);
+    expect(computeKeyboardHeight({ isNativeEvent: false, nativeKbh: 250, webKbh: 280 })).toBe(280);
+    expect(computeKeyboardHeight({ isNativeEvent: false, nativeKbh: 300, webKbh: 280 })).toBe(300);
   });
 
-  it("updates baseline when keyboard closes (kbh=0)", () => {
-    const result = computeKeyboardHeight(base, {
-      isNativeEvent: false,
-      nativeKbh: 0,
-      webKbh: 0,
-      innerHeight: 900, // orientation changed
-    });
-    expect(result.kbh).toBe(0);
-    expect(result.baseInnerHeight).toBe(900);
+  it("returns 0 when both values are 0", () => {
+    expect(computeKeyboardHeight({ isNativeEvent: false, nativeKbh: 0, webKbh: 0 })).toBe(0);
   });
 
-  it("does not trigger anti-double-push for small innerHeight changes (<50px)", () => {
-    const result = computeKeyboardHeight(base, {
-      isNativeEvent: false,
-      nativeKbh: 0,
-      webKbh: 280,
-      innerHeight: 770, // only 30px change, below threshold
-    });
-    expect(result.kbh).toBe(280);
+  it("handles negative webKbh gracefully (takes max with nativeKbh)", () => {
+    // visualViewport can sometimes report height > innerHeight briefly
+    expect(computeKeyboardHeight({ isNativeEvent: false, nativeKbh: 0, webKbh: -10 })).toBe(0);
   });
 });
 

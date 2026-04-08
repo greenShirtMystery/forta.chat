@@ -62,9 +62,12 @@ class MainActivity : BridgeActivity() {
             insetLeft = (systemBars.left / density).toInt()
             insetRight = (systemBars.right / density).toInt()
 
-            // IME bottom includes navigation bar height — subtract it for pure keyboard height
+            // IME bottom includes navigation bar height — subtract it for pure keyboard height.
+            // Clamp to 60% of screen to protect against OEM firmware reporting bogus values.
             val rawKeyboard = (ime.bottom / density).toInt()
-            keyboardHeight = if (rawKeyboard > insetBottom) rawKeyboard - insetBottom else 0
+            val pureKeyboard = if (rawKeyboard > insetBottom) rawKeyboard - insetBottom else 0
+            val screenHeightDp = (resources.displayMetrics.heightPixels / density).toInt()
+            keyboardHeight = pureKeyboard.coerceAtMost((screenHeightDp * 0.6).toInt())
 
             injectSafeAreaInsets()
             injectKeyboardHeight()

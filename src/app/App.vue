@@ -196,17 +196,9 @@ onMounted(async () => {
   }
 
   // Keyboard height detection: native IME insets (primary) + visualViewport (fallback).
-  // Native --native-keyboard-height is injected by MainActivity.kt on every WindowInsets change.
-  // visualViewport serves as fallback for devices where native injection is delayed or unavailable.
-  //
-  // Anti-double-push: baseline innerHeight is tracked at rest (no keyboard) and updated
-  // dynamically to survive orientation changes. If innerHeight shrinks significantly when
-  // keyboard opens, Android itself is resizing the window (adjustResize) — skip our padding.
-  let baseInnerHeight = window.innerHeight;
-
+  // With adjustNothing, the OS does NOT resize the WebView — our CSS padding is the sole
+  // mechanism that lifts content above the keyboard. No anti-double-push needed.
   const updateKeyboardHeight = (e?: Event) => {
-    // When triggered by native event, trust the native value as authoritative —
-    // visualViewport may lag behind WindowInsets when keyboard is dismissed via Back button.
     const isNativeEvent = e?.type === "native-keyboard-change";
     const nativeKbh = isNativeEvent
       ? (e as CustomEvent).detail?.height ?? 0
@@ -218,13 +210,8 @@ onMounted(async () => {
     const vv = window.visualViewport;
     const webKbh = vv ? Math.max(0, window.innerHeight - vv.height) : 0;
 
-    const result = computeKeyboardHeight(
-      { baseInnerHeight },
-      { isNativeEvent, nativeKbh, webKbh, innerHeight: window.innerHeight },
-    );
-    baseInnerHeight = result.baseInnerHeight;
-
-    document.documentElement.style.setProperty("--keyboardheight", `${result.kbh}px`);
+    const kbh = computeKeyboardHeight({ isNativeEvent, nativeKbh, webKbh });
+    document.documentElement.style.setProperty("--keyboardheight", `${kbh}px`);
   };
 
   if (window.visualViewport) {
