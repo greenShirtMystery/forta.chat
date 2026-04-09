@@ -18,7 +18,7 @@ import { isNative } from "@/shared/lib/platform";
 import type { ChatDbKit, ParsedMessage, LocalRoom } from "@/shared/lib/local-db";
 import type { RoomChange } from "@/shared/lib/local-db";
 import { ChatDatabase, useLiveQuery, localToMessages, localStatusToMessageStatus, deriveOutboundStatus } from "@/shared/lib/local-db";
-import type { ChatRoom, FileInfo, LinkPreview, Message, PeerKeysStatus, PollInfo, ReplyTo, TransferInfo } from "./types";
+import type { ChatRoom, FileInfo, ForwardingMessage, LinkPreview, Message, PeerKeysStatus, PollInfo, ReplyTo, TransferInfo } from "./types";
 import { MessageStatus, MessageType } from "./types";
 
 const NAMESPACE = "chat";
@@ -339,6 +339,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
   const messages = shallowRef<Record<string, Message[]>>({});
   const typing = ref<Record<string, string[]>>({});
   const replyingTo = ref<ReplyTo | null>(null);
+  const forwardingMessage = ref<ForwardingMessage | null>(null);
   const isDetachedFromLatest = ref(false);
 
   // Shared counter: yields to main thread every 5 decryption calls across ALL
@@ -469,6 +470,24 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     selectionMode.value = false;
     selectedMessageIds.value = new Set();
     forwardingMessages.value = false;
+  };
+
+  const initForward = (message: Message) => {
+    forwardingMessage.value = {
+      id: message.id,
+      roomId: message.roomId,
+      senderId: message.forwardedFrom?.senderId ?? message.senderId,
+      senderName: message.forwardedFrom?.senderName
+        ?? getDisplayName(message.forwardedFrom?.senderId ?? message.senderId),
+      content: message.content,
+      type: message.type,
+      fileInfo: message.fileInfo,
+      forwardedFrom: message.forwardedFrom,
+    };
+  };
+
+  const cancelForward = () => {
+    forwardingMessage.value = null;
   };
 
   // Server-synced pinned messages (m.room.pinned_events state event)
@@ -5637,6 +5656,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     selectionMode.value = false;
     selectedMessageIds.value = new Set();
     forwardingMessages.value = false;
+    forwardingMessage.value = null;
     pinnedMessages.value = [];
     pinnedMessageIndex.value = 0;
     pinnedRoomIds.value = new Set();
@@ -5675,7 +5695,10 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     enterDetachedMode,
     enterSelectionMode,
     exitSelectionMode,
+    forwardingMessage,
     forwardingMessages,
+    initForward,
+    cancelForward,
     getDisplayName,
     getRoomMemberCount,
     getRoomPowerLevels,
