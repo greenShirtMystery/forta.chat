@@ -646,6 +646,10 @@ export const ru: Record<TranslationKey, string> = {
   "register.step3Text": "Синхронизируем данные и готовим ваш чат...",
   "register.errorTitle": "Ошибка регистрации",
   "register.backToName": "Назад к вводу имени",
+  "register.acceptTerms": "Я принимаю {terms} и {privacy}",
+  "register.termsOfService": "Условия использования",
+  "register.privacyPolicy": "Политику конфиденциальности",
+  "register.mustAcceptTerms": "Необходимо принять условия для продолжения",
   "invite.shareText": "Присоединяйтесь ко мне в Forta Chat!",
 
   // ── Language names ──
