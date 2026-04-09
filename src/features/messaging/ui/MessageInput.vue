@@ -72,7 +72,11 @@ watch(
   (newId, oldId) => {
     if (oldId) {
       saveDraft(oldId, text.value);
-      chatStore.saveForwardDraft(oldId);
+      // Don't save forward back to the source room — forward travels to target only
+      const fwd = chatStore.forwardingMessage;
+      if (fwd && fwd.roomId !== oldId) {
+        chatStore.saveForwardDraft(oldId);
+      }
     }
     text.value = newId ? getDraft(newId) : "";
     mention.clearMentions();
