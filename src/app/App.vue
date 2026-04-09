@@ -19,6 +19,7 @@ import { isNative } from "@/shared/lib/platform";
 import { computeKeyboardHeight, shouldScrollIntoView } from "@/shared/lib/keyboard-height";
 import { useRouter } from "vue-router";
 import { initAndroidBackListener, useAndroidBackHandler } from "@/shared/lib/composables/use-android-back-handler";
+import { initShareTargetListener, consumeShareData, saveShareData, type ExternalShareData } from "@/shared/lib/share-target";
 import RegistrationStepper from "@/features/auth/ui/RegistrationStepper.vue";
 import { useI18n } from "@/shared/lib/i18n";
 
@@ -139,6 +140,34 @@ const processPendingPushRoom = () => {
   processPushOpenRoom(roomId);
 };
 
+const processExternalShare = (data?: ExternalShareData) => {
+  const shareData = data || consumeShareData();
+  if (!shareData) return;
+
+  if (!authStore.isAuthenticated || !authStore.matrixReady) {
+    saveShareData(shareData);
+    return;
+  }
+
+  if (!chatStore.roomsInitialized) {
+    const unwatch = watch(
+      () => chatStore.roomsInitialized,
+      (ready) => {
+        if (ready) {
+          unwatch();
+          chatStore.initExternalShare(shareData);
+          router.push({ name: "ChatPage" });
+        }
+      },
+      { immediate: true },
+    );
+    return;
+  }
+
+  chatStore.initExternalShare(shareData);
+  router.push({ name: "ChatPage" });
+};
+
 if (isNative) {
   window.addEventListener('push:openRoom', ((e: CustomEvent) => {
     const roomId = e.detail?.roomId;
@@ -154,6 +183,8 @@ watch(
       if (localStorage.getItem("bastyon-chat-referral")) processReferral();
       if (localStorage.getItem("bastyon-chat-join-room")) processJoinRoom();
       processPendingPushRoom();
+      const pendingShare = consumeShareData();
+      if (pendingShare) processExternalShare(pendingShare);
     }
   },
 );
@@ -186,6 +217,9 @@ onMounted(async () => {
 
   // Initialize Android hardware back button handler
   initAndroidBackListener();
+
+  // Initialize Android Share Target listener
+  initShareTargetListener((data) => processExternalShare(data));
 
   // Mark Electron mode on <html> for CSS adjustments (drag regions, traffic light padding)
   if ((window as any).electronAPI?.isElectron) {
