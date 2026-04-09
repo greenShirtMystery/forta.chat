@@ -489,6 +489,32 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     };
   };
 
+  /** Initialize forwarding from an external Android share (Share Sheet).
+   *  Creates a synthetic ForwardingMessage and opens the ForwardPicker. */
+  const initExternalShare = (data: { text?: string; fileUri?: string; fileName?: string; mimeType?: string }) => {
+    const content = data.text || data.fileName || "";
+    const isMedia = !!data.fileUri && !!data.mimeType;
+
+    let type: MessageType = MessageType.text;
+    if (isMedia) {
+      if (data.mimeType!.startsWith("image/")) type = MessageType.image;
+      else if (data.mimeType!.startsWith("video/")) type = MessageType.video;
+      else type = MessageType.file;
+    }
+
+    forwardPickerRequested.value = true;
+    forwardingMessage.value = {
+      id: `__external_share_${Date.now()}`,
+      roomId: "__external_share__",
+      senderId: "",
+      content,
+      type,
+      fileInfo: isMedia ? { url: data.fileUri!, name: data.fileName || "shared_file", type: data.mimeType!, size: 0 } : undefined,
+      withSenderInfo: false,
+      isExternalShare: true,
+    };
+  };
+
   const cancelForward = () => {
     // Also remove from drafts so it doesn't resurrect on room switch
     const roomId = activeRoomId.value;
@@ -5718,6 +5744,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     forwardingMessage,
     forwardPickerRequested,
     initForward,
+    initExternalShare,
     cancelForward,
     saveForwardDraft,
     restoreForwardDraft,

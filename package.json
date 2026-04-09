@@ -35,6 +35,7 @@
     "@capacitor/push-notifications": "^8.0.2",
     "@capacitor/share": "^8.0.1",
     "@capacitor/status-bar": "^8.0.1",
+    "@capgo/capacitor-share-target": "^8.0.25",
     "@noble/secp256k1": "^2.3.0",
     "@vee-validate/zod": "^4.13.2",
     "audio-recorder-polyfill": "^0.4.1",

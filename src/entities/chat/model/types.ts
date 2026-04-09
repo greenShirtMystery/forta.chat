@@ -68,6 +68,8 @@ export interface ForwardingMessage {
   forwardedFrom?: { senderId: string; senderName?: string };
   /** Show original sender attribution (default true) */
   withSenderInfo: boolean;
+  /** True when message originates from Android Share Sheet (not internal forward) */
+  isExternalShare?: boolean;
 }
 
 /** Open Graph metadata for URL link previews */
