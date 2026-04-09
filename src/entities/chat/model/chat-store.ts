@@ -340,6 +340,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
   const typing = ref<Record<string, string[]>>({});
   const replyingTo = ref<ReplyTo | null>(null);
   const forwardingMessage = ref<ForwardingMessage | null>(null);
+  const forwardDrafts = new Map<string, ForwardingMessage>();
   const isDetachedFromLatest = ref(false);
 
   // Shared counter: yields to main thread every 5 decryption calls across ALL
@@ -486,7 +487,25 @@ export const useChatStore = defineStore(NAMESPACE, () => {
   };
 
   const cancelForward = () => {
+    // Also remove from drafts so it doesn't resurrect on room switch
+    const roomId = activeRoomId.value;
+    if (roomId) forwardDrafts.delete(roomId);
     forwardingMessage.value = null;
+  };
+
+  /** Save current forward to drafts for the given room (called on room switch) */
+  const saveForwardDraft = (roomId: string) => {
+    if (forwardingMessage.value) {
+      forwardDrafts.set(roomId, { ...forwardingMessage.value });
+    } else {
+      forwardDrafts.delete(roomId);
+    }
+  };
+
+  /** Restore forward draft for the given room (called on room switch) */
+  const restoreForwardDraft = (roomId: string) => {
+    const draft = forwardDrafts.get(roomId);
+    forwardingMessage.value = draft ? { ...draft } : null;
   };
 
   // Server-synced pinned messages (m.room.pinned_events state event)
@@ -5696,6 +5715,8 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     forwardingMessage,
     initForward,
     cancelForward,
+    saveForwardDraft,
+    restoreForwardDraft,
     getDisplayName,
     getRoomMemberCount,
     getRoomPowerLevels,

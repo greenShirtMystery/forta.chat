@@ -246,6 +246,10 @@ export const en = {
   "forward.hideSender": "Hide sender name",
   "forward.changeChat": "Forward to another chat",
   "forward.members": "{count} members",
+  "forward.cancelConfirm.title": "1 message",
+  "forward.cancelConfirm.description": "You selected 1 message from chat with {name}.",
+  "forward.cancelConfirm.settings": "Forward settings",
+  "forward.cancelConfirm.cancel": "Cancel forwarding",
 
   // ── Pinned bar ──
   "pinned.message": "Pinned Message",

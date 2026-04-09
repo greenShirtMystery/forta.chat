@@ -18,6 +18,7 @@ import { useVideoCircleRecorder } from "../model/use-video-circle-recorder";
 import { useMentionAutocomplete } from "../model/use-mention-autocomplete";
 import MentionAutocomplete from "./MentionAutocomplete.vue";
 import { useMobile } from "@/shared/lib/composables/use-media-query";
+import { useResolvedRoomName } from "@/entities/chat/lib/use-resolved-room-name";
 import { shouldSendOnEnter } from "../model/enter-key-behavior";
 import { isNative } from "@/shared/lib/platform";
 
@@ -69,11 +70,16 @@ watch(text, (val) => {
 watch(
   () => chatStore.activeRoomId,
   (newId, oldId) => {
-    if (oldId) saveDraft(oldId, text.value);
+    if (oldId) {
+      saveDraft(oldId, text.value);
+      chatStore.saveForwardDraft(oldId);
+    }
     text.value = newId ? getDraft(newId) : "";
     mention.clearMentions();
     chatStore.editingMessage = null;
     chatStore.replyingTo = null;
+    if (newId) chatStore.restoreForwardDraft(newId);
+    else chatStore.forwardingMessage = null;
     nextTick(() => { if (textareaRef.value) textareaRef.value.style.height = "auto"; });
   },
   { immediate: true }
@@ -311,7 +317,28 @@ const forwardPreviewText = computed(() => {
   return (txt.length > 100 ? txt.slice(0, 100) + "\u2026" : txt) || "...";
 });
 
-const cancelForward = () => { chatStore.cancelForward(); };
+// Forward cancel confirmation
+const { resolve: resolveRoomName } = useResolvedRoomName();
+const forwardSourceRoomName = computed(() => {
+  const fwd = chatStore.forwardingMessage;
+  if (!fwd) return "";
+  const room = chatStore.rooms.find(r => r.id === fwd.roomId);
+  return room ? resolveRoomName(room) : "";
+});
+const showCancelForwardConfirm = ref(false);
+
+const cancelForward = () => {
+  showCancelForwardConfirm.value = true;
+};
+
+const confirmCancelForward = () => {
+  showCancelForwardConfirm.value = false;
+  chatStore.cancelForward();
+};
+
+const dismissCancelForward = () => {
+  showCancelForwardConfirm.value = false;
+};
 
 // Forward options popup
 const showForwardOptions = ref(false);
@@ -667,6 +694,38 @@ const handleKitchenSelect = async (imageUrl: string) => {
       </div>
     </transition>
 
+    <!-- Forward cancel confirmation modal -->
+    <Teleport to="body">
+      <transition name="fp-fade">
+        <div
+          v-if="showCancelForwardConfirm"
+          class="fixed inset-0 z-[60] flex items-center justify-center bg-black/40"
+          @click.self="dismissCancelForward"
+        >
+          <div class="mx-4 w-full max-w-sm rounded-2xl bg-background-total-theme p-5 shadow-xl">
+            <div class="mb-1 text-center text-base font-semibold text-text-color">{{ t("forward.cancelConfirm.title") }}</div>
+            <div class="mb-5 text-center text-sm text-text-on-main-bg-color">
+              {{ t("forward.cancelConfirm.description", { name: forwardSourceRoomName }) }}
+            </div>
+            <div class="flex flex-col gap-2">
+              <button
+                class="w-full rounded-xl bg-neutral-grad-0 py-3 text-sm font-medium text-text-color transition-colors hover:bg-neutral-grad-1"
+                @click="dismissCancelForward(); openForwardOptions()"
+              >
+                {{ t("forward.cancelConfirm.settings") }}
+              </button>
+              <button
+                class="w-full rounded-xl bg-red-500 py-3 text-sm font-medium text-white transition-colors hover:bg-red-600"
+                @click="confirmCancelForward"
+              >
+                {{ t("forward.cancelConfirm.cancel") }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </transition>
+    </Teleport>
+
     <!-- Link preview bar -->
     <transition name="input-bar">
       <div v-if="!isEditing && !chatStore.replyingTo && (linkPreview.loading.value || linkPreview.activePreview.value)" class="mx-auto flex max-w-6xl items-center gap-2 border-b border-neutral-grad-0 px-3 py-2">
@@ -929,6 +988,9 @@ const handleKitchenSelect = async (imageUrl: string) => {
   50% { transform: scale(0.9); }
   100% { transform: scale(1); }
 }
+.fp-fade-enter-active { transition: opacity 0.25s ease-out; }
+.fp-fade-leave-active { transition: opacity 0.2s ease-in; }
+.fp-fade-enter-from, .fp-fade-leave-to { opacity: 0; }
 .input-bar-enter-active, .input-bar-leave-active { transition: max-height 0.2s ease, opacity 0.2s ease; overflow: hidden; }
 .input-bar-enter-from, .input-bar-leave-to { max-height: 0; opacity: 0; }
 .input-bar-enter-to, .input-bar-leave-from { max-height: 80px; opacity: 1; }
