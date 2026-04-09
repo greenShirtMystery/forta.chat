@@ -14,6 +14,7 @@ const localeStore = useLocaleStore();
 
 const name = ref("");
 const about = ref("");
+const acceptedTerms = ref(false);
 const loading = ref(false);
 const error = ref("");
 
@@ -97,7 +98,7 @@ watch(name, () => {
 });
 
 const canSubmit = computed(() => {
-  return name.value.trim().length > 0 && !nameError.value && !nameChecking.value && !loading.value;
+  return name.value.trim().length > 0 && !nameError.value && !nameChecking.value && !loading.value && acceptedTerms.value;
 });
 
 const handleAvatarClick = () => avatarFileInput.value?.click();
@@ -226,6 +227,27 @@ const handleSubmit = async () => {
     </div>
 
     <p v-if="error" class="mt-3 text-xs text-color-bad">{{ error }}</p>
+
+    <!-- Terms checkbox -->
+    <label class="mt-4 flex cursor-pointer items-start gap-2.5 text-[13px] leading-snug text-text-on-main-bg-color">
+      <input
+        v-model="acceptedTerms"
+        type="checkbox"
+        class="mt-0.5 h-4 w-4 shrink-0 cursor-pointer accent-color-bg-ac"
+        :disabled="loading"
+      />
+      <span>
+        {{ t("register.acceptTerms").split("{terms}")[0] }}<router-link
+          to="/legal/terms"
+          class="font-medium text-color-txt-ac hover:underline"
+          @click.stop
+        >{{ t("register.termsOfService") }}</router-link>{{ t("register.acceptTerms").split("{terms}")[1].split("{privacy}")[0] }}<router-link
+          to="/legal/privacy"
+          class="font-medium text-color-txt-ac hover:underline"
+          @click.stop
+        >{{ t("register.privacyPolicy") }}</router-link>{{ t("register.acceptTerms").split("{privacy}")[1] }}
+      </span>
+    </label>
 
     <!-- Submit -->
     <button

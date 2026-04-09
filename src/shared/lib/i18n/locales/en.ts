@@ -644,6 +644,10 @@ export const en = {
   "register.step3Text": "Syncing data and preparing your chat...",
   "register.errorTitle": "Registration error",
   "register.backToName": "Back to name entry",
+  "register.acceptTerms": "I agree to the {terms} and {privacy}",
+  "register.termsOfService": "Terms of Service",
+  "register.privacyPolicy": "Privacy Policy",
+  "register.mustAcceptTerms": "You must accept the terms to continue",
   "invite.shareText": "Join me on Forta Chat!",
 
   // ── Language names ──
