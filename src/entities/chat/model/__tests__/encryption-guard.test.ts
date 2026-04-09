@@ -62,14 +62,13 @@ describe("canBeEncrypt uses actual member count", () => {
     "utf-8",
   );
 
-  it("checks getJoinedMemberCount before usersinfo length", () => {
-    // getJoinedMemberCount comes from server summary — accurate even with lazyLoadMembers
+  it("uses Math.max of server count and usersinfo for threshold", () => {
     expect(source).toContain("getJoinedMemberCount");
-    expect(source).toContain("actualMemberCount >= 50");
+    expect(source).toContain("Math.max(serverCount, usersinfoArray.length)");
+    expect(source).toContain("memberCount >= 50");
   });
 
   it("prepare() also uses getJoinedMemberCount for skip threshold", () => {
-    // prepare() should use actual count to skip expensive key fetching
     expect(source).toContain("Math.max(actualMemberCount, Object.keys(users).length)");
   });
 });

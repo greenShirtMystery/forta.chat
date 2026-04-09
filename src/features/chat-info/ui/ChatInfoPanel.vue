@@ -67,6 +67,11 @@ const refreshRoomPublic = () => {
 
 watch(room, refreshRoomPublic, { immediate: true });
 
+// Refresh encryption status when panel opens or room changes
+watch([room, () => props.show], async ([r, visible]) => {
+  if (r && visible) await chatStore.checkPeerKeys(r.id);
+}, { immediate: true });
+
 const inviteLink = computed(() => {
   if (!room.value) return "";
   return `${APP_PUBLIC_URL}/#/join?room=${encodeURIComponent(room.value.id)}`;
