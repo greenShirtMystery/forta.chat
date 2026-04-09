@@ -173,7 +173,7 @@ const showDonateModal = ref(false);
 useAndroidBackHandler("chat-forward-picker", 90, () => {
   if (!showForwardPicker.value) return false;
   showForwardPicker.value = false;
-  chatStore.exitSelectionMode();
+  chatStore.cancelForward();
   return true;
 });
 
@@ -228,13 +228,12 @@ const handleScrollToMessage = (messageId: string) => {
   messageListRef.value?.scrollToMessage(messageId);
 };
 
-const handleSelectionForward = () => {
-  showForwardPicker.value = true;
-};
-
-// Auto-open ForwardPicker when "forward" is selected from context menu
-watch(() => chatStore.forwardingMessages, (v) => {
-  if (v) showForwardPicker.value = true;
+// Auto-open ForwardPicker when "forward" is selected from context menu (not on draft restore)
+watch(() => chatStore.forwardPickerRequested, (v) => {
+  if (v) {
+    showForwardPicker.value = true;
+    chatStore.forwardPickerRequested = false;
+  }
 });
 
 const handleSelectionCopy = () => {
@@ -533,7 +532,6 @@ onUnmounted(() => {
         <MessageList ref="messageListRef" />
         <SelectionBar
           v-if="chatStore.selectionMode"
-          @forward="handleSelectionForward"
           @copy="handleSelectionCopy"
           @delete="handleSelectionDelete"
         />
@@ -545,7 +543,7 @@ onUnmounted(() => {
         />
         <ForwardPicker
           :show="showForwardPicker"
-          @close="showForwardPicker = false; chatStore.exitSelectionMode()"
+          @close="showForwardPicker = false"
         />
       </template>
     </template>

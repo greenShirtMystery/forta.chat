@@ -236,16 +236,20 @@ export const en = {
   "emoji.searchPlaceholder": "Search emoji...",
   "emoji.recent": "Recent",
 
-  // ── Forward picker ──
+  // ── Forward ──
   "forward.title": "Forward to...",
-  "forward.selected": "{count} selected",
   "forward.searchPlaceholder": "Search chats...",
   "forward.noChats": "No chats found",
-  "forward.includeSender": "Include sender info",
   "forward.sending": "Sending...",
-  "forward.button": "Forward ({count})",
-  "forward.success": "Forwarded {msgCount} message(s) to {roomCount} chat(s)",
-  "forward.failed": "Failed to forward",
+  "forward.message": "Forwarded message",
+  "forward.showSender": "Show sender name",
+  "forward.hideSender": "Hide sender name",
+  "forward.changeChat": "Forward to another chat",
+  "forward.members": "{count} members",
+  "forward.cancelConfirm.title": "1 message",
+  "forward.cancelConfirm.description": "You selected 1 message from chat with {name}.",
+  "forward.cancelConfirm.settings": "Forward settings",
+  "forward.cancelConfirm.cancel": "Cancel forwarding",
 
   // ── Pinned bar ──
   "pinned.message": "Pinned Message",

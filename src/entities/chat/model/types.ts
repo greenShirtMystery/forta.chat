@@ -56,6 +56,20 @@ export interface ReplyTo {
   deleted?: boolean;
 }
 
+/** State for a single message being forwarded to another chat */
+export interface ForwardingMessage {
+  id: string;
+  roomId: string;
+  senderId: string;
+  senderName?: string;
+  content: string;
+  type: MessageType;
+  fileInfo?: FileInfo;
+  forwardedFrom?: { senderId: string; senderName?: string };
+  /** Show original sender attribution (default true) */
+  withSenderInfo: boolean;
+}
+
 /** Open Graph metadata for URL link previews */
 export interface LinkPreview {
   url: string;

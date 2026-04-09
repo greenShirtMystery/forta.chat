@@ -238,16 +238,20 @@ export const ru: Record<TranslationKey, string> = {
   "emoji.searchPlaceholder": "Поиск эмодзи...",
   "emoji.recent": "Недавние",
 
-  // ── Forward picker ──
+  // ── Forward ──
   "forward.title": "Переслать в...",
-  "forward.selected": "{count} выбрано",
   "forward.searchPlaceholder": "Поиск чатов...",
   "forward.noChats": "Чаты не найдены",
-  "forward.includeSender": "Указать отправителя",
   "forward.sending": "Отправка...",
-  "forward.button": "Переслать ({count})",
-  "forward.success": "Переслано {msgCount} сообщ. в {roomCount} чат(ов)",
-  "forward.failed": "Не удалось переслать",
+  "forward.message": "Пересланное сообщение",
+  "forward.showSender": "Показать имя отправителя",
+  "forward.hideSender": "Скрыть имя отправителя",
+  "forward.changeChat": "Переслать в другой чат",
+  "forward.members": "{count} участн.",
+  "forward.cancelConfirm.title": "1 сообщение",
+  "forward.cancelConfirm.description": "Вы выбрали 1 сообщение из чата с {name}.",
+  "forward.cancelConfirm.settings": "Настройки пересылки",
+  "forward.cancelConfirm.cancel": "Отменить пересылку",
 
   // ── Pinned bar ──
   "pinned.message": "Закреплённое сообщение",

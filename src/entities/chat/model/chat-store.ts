@@ -18,7 +18,7 @@ import { isNative } from "@/shared/lib/platform";
 import type { ChatDbKit, ParsedMessage, LocalRoom } from "@/shared/lib/local-db";
 import type { RoomChange } from "@/shared/lib/local-db";
 import { ChatDatabase, useLiveQuery, localToMessages, localStatusToMessageStatus, deriveOutboundStatus } from "@/shared/lib/local-db";
-import type { ChatRoom, FileInfo, LinkPreview, Message, PeerKeysStatus, PollInfo, ReplyTo, TransferInfo } from "./types";
+import type { ChatRoom, FileInfo, ForwardingMessage, LinkPreview, Message, PeerKeysStatus, PollInfo, ReplyTo, TransferInfo } from "./types";
 import { MessageStatus, MessageType } from "./types";
 
 const NAMESPACE = "chat";
@@ -339,6 +339,10 @@ export const useChatStore = defineStore(NAMESPACE, () => {
   const messages = shallowRef<Record<string, Message[]>>({});
   const typing = ref<Record<string, string[]>>({});
   const replyingTo = ref<ReplyTo | null>(null);
+  const forwardingMessage = ref<ForwardingMessage | null>(null);
+  /** True only when initForward is called (context menu) — NOT on draft restore */
+  const forwardPickerRequested = ref(false);
+  const forwardDrafts = new Map<string, ForwardingMessage>();
   const isDetachedFromLatest = ref(false);
 
   // Shared counter: yields to main thread every 5 decryption calls across ALL
@@ -451,7 +455,6 @@ export const useChatStore = defineStore(NAMESPACE, () => {
   // Selection/forward state (Batch 4)
   const selectionMode = ref(false);
   const selectedMessageIds = ref<Set<string>>(new Set());
-  const forwardingMessages = ref(false);
 
   const enterSelectionMode = (messageId: string) => {
     selectionMode.value = true;
@@ -468,7 +471,44 @@ export const useChatStore = defineStore(NAMESPACE, () => {
   const exitSelectionMode = () => {
     selectionMode.value = false;
     selectedMessageIds.value = new Set();
-    forwardingMessages.value = false;
+  };
+
+  const initForward = (message: Message) => {
+    forwardPickerRequested.value = true;
+    forwardingMessage.value = {
+      id: message.id,
+      roomId: message.roomId,
+      senderId: message.forwardedFrom?.senderId ?? message.senderId,
+      senderName: message.forwardedFrom?.senderName
+        ?? getDisplayName(message.forwardedFrom?.senderId ?? message.senderId),
+      content: message.content,
+      type: message.type,
+      fileInfo: message.fileInfo,
+      forwardedFrom: message.forwardedFrom,
+      withSenderInfo: true,
+    };
+  };
+
+  const cancelForward = () => {
+    // Also remove from drafts so it doesn't resurrect on room switch
+    const roomId = activeRoomId.value;
+    if (roomId) forwardDrafts.delete(roomId);
+    forwardingMessage.value = null;
+  };
+
+  /** Save current forward to drafts for the given room (called on room switch) */
+  const saveForwardDraft = (roomId: string) => {
+    if (forwardingMessage.value) {
+      forwardDrafts.set(roomId, { ...forwardingMessage.value });
+    } else {
+      forwardDrafts.delete(roomId);
+    }
+  };
+
+  /** Restore forward draft for the given room (called on room switch) */
+  const restoreForwardDraft = (roomId: string) => {
+    const draft = forwardDrafts.get(roomId);
+    forwardingMessage.value = draft ? { ...draft } : null;
   };
 
   // Server-synced pinned messages (m.room.pinned_events state event)
@@ -5636,7 +5676,7 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     userDisplayNames.value = {};
     selectionMode.value = false;
     selectedMessageIds.value = new Set();
-    forwardingMessages.value = false;
+    forwardingMessage.value = null;
     pinnedMessages.value = [];
     pinnedMessageIndex.value = 0;
     pinnedRoomIds.value = new Set();
@@ -5675,7 +5715,12 @@ export const useChatStore = defineStore(NAMESPACE, () => {
     enterDetachedMode,
     enterSelectionMode,
     exitSelectionMode,
-    forwardingMessages,
+    forwardingMessage,
+    forwardPickerRequested,
+    initForward,
+    cancelForward,
+    saveForwardDraft,
+    restoreForwardDraft,
     getDisplayName,
     getRoomMemberCount,
     getRoomPowerLevels,

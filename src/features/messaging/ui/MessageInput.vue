@@ -18,6 +18,7 @@ import { useVideoCircleRecorder } from "../model/use-video-circle-recorder";
 import { useMentionAutocomplete } from "../model/use-mention-autocomplete";
 import MentionAutocomplete from "./MentionAutocomplete.vue";
 import { useMobile } from "@/shared/lib/composables/use-media-query";
+import { useResolvedRoomName } from "@/entities/chat/lib/use-resolved-room-name";
 import { shouldSendOnEnter } from "../model/enter-key-behavior";
 import { isNative } from "@/shared/lib/platform";
 
@@ -32,7 +33,7 @@ const emit = defineEmits<{ donate: [] }>();
 const chatStore = useChatStore();
 const themeStore = useThemeStore();
 const { t } = useI18n();
-const { sendMessage, sendFile, sendImage, sendAudio, sendVideoCircle, sendReply, editMessage, setTyping, sendPoll, sendGif } = useMessages();
+const { sendMessage, sendFile, sendImage, sendAudio, sendVideoCircle, sendReply, sendForward, editMessage, setTyping, sendPoll, sendGif } = useMessages();
 const mediaUpload = useMediaUpload();
 const pasteDrop = usePasteDrop({
   onMediaFiles: (files) => mediaUpload.addFiles(files),
@@ -69,11 +70,20 @@ watch(text, (val) => {
 watch(
   () => chatStore.activeRoomId,
   (newId, oldId) => {
-    if (oldId) saveDraft(oldId, text.value);
+    if (oldId) {
+      saveDraft(oldId, text.value);
+      // Don't save forward back to the source room — forward travels to target only
+      const fwd = chatStore.forwardingMessage;
+      if (fwd && fwd.roomId !== oldId) {
+        chatStore.saveForwardDraft(oldId);
+      }
+    }
     text.value = newId ? getDraft(newId) : "";
     mention.clearMentions();
     chatStore.editingMessage = null;
     chatStore.replyingTo = null;
+    if (newId) chatStore.restoreForwardDraft(newId);
+    else chatStore.forwardingMessage = null;
     nextTick(() => { if (textareaRef.value) textareaRef.value.style.height = "auto"; });
   },
   { immediate: true }
@@ -110,6 +120,10 @@ watch(() => chatStore.editingMessage, (editing) => {
 
 watch(() => chatStore.replyingTo, (reply) => {
   if (reply) nextTick(() => textareaRef.value?.focus());
+});
+
+watch(() => chatStore.forwardingMessage, (fwd) => {
+  if (fwd) nextTick(() => textareaRef.value?.focus());
 });
 
 const peerKeysOk = computed(() => {
@@ -157,7 +171,7 @@ const autoResize = autoGrow;
 const showSecondaryActions = computed(() => !isMobile.value || !text.value.trim());
 
 const handleSend = async () => {
-  if (!text.value.trim() || !peerKeysOk.value) return;
+  if ((!text.value.trim() && !showForwardPreview.value) || !peerKeysOk.value) return;
   const rawText = mention.resolveText();
   const savedText = text.value;
 
@@ -175,6 +189,15 @@ const handleSend = async () => {
       editMessage(chatStore.editingMessage!.id, rawText);
       chatStore.editingMessage = null;
       inserted = true;
+    } else if (chatStore.forwardingMessage) {
+      const fwd = chatStore.forwardingMessage;
+      const forwardMeta = fwd.withSenderInfo
+        ? { senderId: fwd.senderId, senderName: fwd.senderName }
+        : undefined;
+      // Use user's text if provided, otherwise original content, or fallback description for media
+      const forwardContent = rawText || fwd.content || forwardPreviewText.value;
+      inserted = await sendForward(forwardContent, forwardMeta);
+      if (inserted !== false) chatStore.cancelForward();
     } else if (chatStore.replyingTo) {
       inserted = await sendReply(rawText, linkPreview.dismissed.value);
     } else {
@@ -285,6 +308,77 @@ const replyInputPreviewText = computed(() => {
   const t = stripBastyonLinks(stripMentionAddresses(reply.content));
   return (t.length > 100 ? t.slice(0, 100) + "\u2026" : t) || "...";
 });
+
+/** Show forward preview only after user picked a target (not while still in source room with picker open) */
+const showForwardPreview = computed(() => {
+  const fwd = chatStore.forwardingMessage;
+  if (!fwd) return false;
+  // Hide in source room — preview only shows in the target room
+  return chatStore.activeRoomId !== fwd.roomId;
+});
+
+const forwardPreviewText = computed(() => {
+  const fwd = chatStore.forwardingMessage;
+  if (!fwd) return "";
+  if (fwd.type === MessageType.image) return "Photo";
+  if (fwd.type === MessageType.video) return "Video";
+  if (fwd.type === MessageType.videoCircle) return "Video message";
+  if (fwd.type === MessageType.audio) return "Voice message";
+  if (fwd.type === MessageType.file) return fwd.content || "File";
+  const txt = stripBastyonLinks(stripMentionAddresses(fwd.content));
+  return (txt.length > 100 ? txt.slice(0, 100) + "\u2026" : txt) || "...";
+});
+
+// Forward cancel confirmation
+const { resolve: resolveRoomName } = useResolvedRoomName();
+const forwardSourceRoomName = computed(() => {
+  const fwd = chatStore.forwardingMessage;
+  if (!fwd) return "";
+  const room = chatStore.rooms.find(r => r.id === fwd.roomId);
+  return room ? resolveRoomName(room) : "";
+});
+const showCancelForwardConfirm = ref(false);
+
+const cancelForward = () => {
+  showCancelForwardConfirm.value = true;
+};
+
+const confirmCancelForward = () => {
+  showCancelForwardConfirm.value = false;
+  chatStore.cancelForward();
+};
+
+const dismissCancelForward = () => {
+  showCancelForwardConfirm.value = false;
+};
+
+// Forward options popup
+const showForwardOptions = ref(false);
+
+const openForwardOptions = () => {
+  showForwardOptions.value = !showForwardOptions.value;
+};
+
+// Close forward options on click outside
+const onDocumentClick = (e: MouseEvent) => {
+  if (showForwardOptions.value) {
+    showForwardOptions.value = false;
+  }
+};
+watch(showForwardOptions, (v) => {
+  if (v) setTimeout(() => document.addEventListener("click", onDocumentClick, { once: true }), 0);
+});
+
+const toggleSenderInfo = () => {
+  if (chatStore.forwardingMessage) {
+    chatStore.forwardingMessage.withSenderInfo = !chatStore.forwardingMessage.withSenderInfo;
+  }
+};
+
+const changeForwardTarget = () => {
+  showForwardOptions.value = false;
+  chatStore.forwardPickerRequested = true;
+};
 
 // --- Recording handlers ---
 const handleVoiceSend = async () => {
@@ -554,6 +648,91 @@ const handleKitchenSelect = async (imageUrl: string) => {
       </div>
     </transition>
 
+    <!-- Forward preview bar -->
+    <transition name="input-bar">
+      <div v-if="!isEditing && !chatStore.replyingTo && showForwardPreview" class="relative mx-auto flex max-w-6xl items-center gap-2 border-b border-neutral-grad-0 px-3 py-2">
+        <button class="flex h-8 w-8 items-center justify-center text-color-bg-ac" @click="openForwardOptions">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="15 17 20 12 15 7" /><path d="M4 18v-2a4 4 0 0 1 4-4h12" />
+          </svg>
+        </button>
+        <div class="h-8 w-0.5 shrink-0 rounded-full bg-color-bg-ac" />
+        <div class="min-w-0 flex-1 cursor-pointer" @click="openForwardOptions">
+          <div class="truncate text-xs font-medium text-color-bg-ac">
+            {{ chatStore.forwardingMessage.withSenderInfo ? (chatStore.forwardingMessage.senderName || t("forward.message")) : t("forward.message") }}
+          </div>
+          <div class="truncate text-xs text-text-on-main-bg-color">{{ forwardPreviewText }}</div>
+        </div>
+        <button class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-text-on-main-bg-color hover:bg-neutral-grad-0" @click="cancelForward">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18" /><path d="M6 6l12 12" /></svg>
+        </button>
+
+        <!-- Forward options popup -->
+        <transition name="input-bar">
+          <div v-if="showForwardOptions" class="absolute bottom-full left-2 z-50 mb-1 min-w-[220px] rounded-xl bg-background-total-theme py-1 shadow-lg ring-1 ring-neutral-grad-0">
+            <button
+              class="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm text-text-color transition-colors hover:bg-neutral-grad-0"
+              @click="toggleSenderInfo"
+            >
+              <svg v-if="chatStore.forwardingMessage.withSenderInfo" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-color-bg-ac"><polyline points="20 6 9 17 4 12" /></svg>
+              <span v-else class="inline-block h-4 w-4" />
+              {{ t("forward.showSender") }}
+            </button>
+            <button
+              class="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm text-text-color transition-colors hover:bg-neutral-grad-0"
+              @click="toggleSenderInfo"
+            >
+              <svg v-if="!chatStore.forwardingMessage.withSenderInfo" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-color-bg-ac"><polyline points="20 6 9 17 4 12" /></svg>
+              <span v-else class="inline-block h-4 w-4" />
+              {{ t("forward.hideSender") }}
+            </button>
+            <div class="my-1 border-t border-neutral-grad-0" />
+            <button
+              class="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm text-text-color transition-colors hover:bg-neutral-grad-0"
+              @click="changeForwardTarget"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" /><path d="m15 5 4 4" />
+              </svg>
+              {{ t("forward.changeChat") }}
+            </button>
+          </div>
+        </transition>
+      </div>
+    </transition>
+
+    <!-- Forward cancel confirmation modal -->
+    <Teleport to="body">
+      <transition name="fp-fade">
+        <div
+          v-if="showCancelForwardConfirm"
+          class="fixed inset-0 z-[60] flex items-center justify-center bg-black/40"
+          @click.self="dismissCancelForward"
+        >
+          <div class="mx-4 w-full max-w-sm rounded-2xl bg-background-total-theme p-5 shadow-xl">
+            <div class="mb-1 text-center text-base font-semibold text-text-color">{{ t("forward.cancelConfirm.title") }}</div>
+            <div class="mb-5 text-center text-sm text-text-on-main-bg-color">
+              {{ t("forward.cancelConfirm.description", { name: forwardSourceRoomName }) }}
+            </div>
+            <div class="flex flex-col gap-2">
+              <button
+                class="w-full rounded-xl bg-neutral-grad-0 py-3 text-sm font-medium text-text-color transition-colors hover:bg-neutral-grad-1"
+                @click="dismissCancelForward(); openForwardOptions()"
+              >
+                {{ t("forward.cancelConfirm.settings") }}
+              </button>
+              <button
+                class="w-full rounded-xl bg-red-500 py-3 text-sm font-medium text-white transition-colors hover:bg-red-600"
+                @click="confirmCancelForward"
+              >
+                {{ t("forward.cancelConfirm.cancel") }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </transition>
+    </Teleport>
+
     <!-- Link preview bar -->
     <transition name="input-bar">
       <div v-if="!isEditing && !chatStore.replyingTo && (linkPreview.loading.value || linkPreview.activePreview.value)" class="mx-auto flex max-w-6xl items-center gap-2 border-b border-neutral-grad-0 px-3 py-2">
@@ -641,9 +820,9 @@ const handleKitchenSelect = async (imageUrl: string) => {
 
         <!-- Send OR record button -->
         <transition name="btn-morph" mode="out-in">
-          <button v-if="text.trim() || sending" key="send"
+          <button v-if="text.trim() || sending || showForwardPreview" key="send"
             class="send-btn flex h-10 w-10 min-h-tap min-w-tap shrink-0 items-center justify-center rounded-full bg-color-bg-ac text-white transition-all hover:bg-color-bg-ac-1 disabled:opacity-50"
-            :disabled="!text.trim() || sending || !peerKeysOk" @click="handleSend">
+            :disabled="(!text.trim() && !showForwardPreview) || sending || !peerKeysOk" @click="handleSend">
             <svg v-if="sending" class="h-5 w-5 animate-spin rounded-full border-2 border-white border-t-transparent" viewBox="0 0 24 24" />
             <svg v-else-if="isEditing" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12" /></svg>
             <svg v-else width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" /></svg>
@@ -816,6 +995,9 @@ const handleKitchenSelect = async (imageUrl: string) => {
   50% { transform: scale(0.9); }
   100% { transform: scale(1); }
 }
+.fp-fade-enter-active { transition: opacity 0.25s ease-out; }
+.fp-fade-leave-active { transition: opacity 0.2s ease-in; }
+.fp-fade-enter-from, .fp-fade-leave-to { opacity: 0; }
 .input-bar-enter-active, .input-bar-leave-active { transition: max-height 0.2s ease, opacity 0.2s ease; overflow: hidden; }
 .input-bar-enter-from, .input-bar-leave-to { max-height: 0; opacity: 0; }
 .input-bar-enter-to, .input-bar-leave-from { max-height: 80px; opacity: 1; }
