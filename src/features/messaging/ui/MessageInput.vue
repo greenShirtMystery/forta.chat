@@ -181,10 +181,9 @@ const handleSend = async () => {
       inserted = true;
     } else if (chatStore.forwardingMessage) {
       const fwd = chatStore.forwardingMessage;
-      const forwardMeta = {
-        senderId: fwd.senderId,
-        senderName: fwd.senderName,
-      };
+      const forwardMeta = fwd.withSenderInfo
+        ? { senderId: fwd.senderId, senderName: fwd.senderName }
+        : undefined;
       // Use user's text if provided, otherwise original content, or fallback description for media
       const forwardContent = rawText || fwd.content || forwardPreviewText.value;
       inserted = await sendForward(forwardContent, forwardMeta);
@@ -313,6 +312,39 @@ const forwardPreviewText = computed(() => {
 });
 
 const cancelForward = () => { chatStore.cancelForward(); };
+
+// Forward options popup
+const showForwardOptions = ref(false);
+
+const openForwardOptions = () => {
+  showForwardOptions.value = !showForwardOptions.value;
+};
+
+// Close forward options on click outside
+const onDocumentClick = (e: MouseEvent) => {
+  if (showForwardOptions.value) {
+    showForwardOptions.value = false;
+  }
+};
+watch(showForwardOptions, (v) => {
+  if (v) setTimeout(() => document.addEventListener("click", onDocumentClick, { once: true }), 0);
+});
+
+const toggleSenderInfo = () => {
+  if (chatStore.forwardingMessage) {
+    chatStore.forwardingMessage.withSenderInfo = !chatStore.forwardingMessage.withSenderInfo;
+  }
+};
+
+const changeForwardTarget = () => {
+  showForwardOptions.value = false;
+  // Re-open the ForwardPicker by emitting — ChatWindow watches forwardingMessage
+  // We need to trigger the picker again. Set a flag to re-open it.
+  // Simplest: just re-assign forwardingMessage to trigger the watcher
+  if (chatStore.forwardingMessage) {
+    chatStore.forwardingMessage = { ...chatStore.forwardingMessage };
+  }
+};
 
 // --- Recording handlers ---
 const handleVoiceSend = async () => {
@@ -584,20 +616,54 @@ const handleKitchenSelect = async (imageUrl: string) => {
 
     <!-- Forward preview bar -->
     <transition name="input-bar">
-      <div v-if="!isEditing && !chatStore.replyingTo && chatStore.forwardingMessage" class="mx-auto flex max-w-6xl items-center gap-2 border-b border-neutral-grad-0 px-3 py-2">
-        <div class="flex h-8 w-8 items-center justify-center text-color-bg-ac">
+      <div v-if="!isEditing && !chatStore.replyingTo && chatStore.forwardingMessage" class="relative mx-auto flex max-w-6xl items-center gap-2 border-b border-neutral-grad-0 px-3 py-2">
+        <button class="flex h-8 w-8 items-center justify-center text-color-bg-ac" @click="openForwardOptions">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="15 17 20 12 15 7" /><path d="M4 18v-2a4 4 0 0 1 4-4h12" />
           </svg>
-        </div>
+        </button>
         <div class="h-8 w-0.5 shrink-0 rounded-full bg-color-bg-ac" />
-        <div class="min-w-0 flex-1">
-          <div class="truncate text-xs font-medium text-color-bg-ac">{{ chatStore.forwardingMessage.senderName || t("forward.message") }}</div>
+        <div class="min-w-0 flex-1 cursor-pointer" @click="openForwardOptions">
+          <div class="truncate text-xs font-medium text-color-bg-ac">
+            {{ chatStore.forwardingMessage.withSenderInfo ? (chatStore.forwardingMessage.senderName || t("forward.message")) : t("forward.message") }}
+          </div>
           <div class="truncate text-xs text-text-on-main-bg-color">{{ forwardPreviewText }}</div>
         </div>
         <button class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-text-on-main-bg-color hover:bg-neutral-grad-0" @click="cancelForward">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18" /><path d="M6 6l12 12" /></svg>
         </button>
+
+        <!-- Forward options popup -->
+        <transition name="input-bar">
+          <div v-if="showForwardOptions" class="absolute bottom-full left-2 z-50 mb-1 min-w-[220px] rounded-xl bg-background-total-theme py-1 shadow-lg ring-1 ring-neutral-grad-0">
+            <button
+              class="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm text-text-color transition-colors hover:bg-neutral-grad-0"
+              @click="toggleSenderInfo"
+            >
+              <svg v-if="chatStore.forwardingMessage.withSenderInfo" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-color-bg-ac"><polyline points="20 6 9 17 4 12" /></svg>
+              <span v-else class="inline-block h-4 w-4" />
+              {{ t("forward.showSender") }}
+            </button>
+            <button
+              class="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm text-text-color transition-colors hover:bg-neutral-grad-0"
+              @click="toggleSenderInfo"
+            >
+              <svg v-if="!chatStore.forwardingMessage.withSenderInfo" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-color-bg-ac"><polyline points="20 6 9 17 4 12" /></svg>
+              <span v-else class="inline-block h-4 w-4" />
+              {{ t("forward.hideSender") }}
+            </button>
+            <div class="my-1 border-t border-neutral-grad-0" />
+            <button
+              class="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm text-text-color transition-colors hover:bg-neutral-grad-0"
+              @click="changeForwardTarget"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" /><path d="m15 5 4 4" />
+              </svg>
+              {{ t("forward.changeChat") }}
+            </button>
+          </div>
+        </transition>
       </div>
     </transition>
 

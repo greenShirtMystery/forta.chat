@@ -66,6 +66,8 @@ export interface ForwardingMessage {
   type: MessageType;
   fileInfo?: FileInfo;
   forwardedFrom?: { senderId: string; senderName?: string };
+  /** Show original sender attribution (default true) */
+  withSenderInfo: boolean;
 }
 
 /** Open Graph metadata for URL link previews */

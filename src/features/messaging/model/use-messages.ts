@@ -1279,10 +1279,10 @@ export function useMessages() {
   };
 
   /** Send a forwarded text message with optimistic UI. Returns true if insert succeeded.
-   *  For media forwards (image/video/audio/file), the content is the text body or caption. */
+   *  Pass forwardMeta to include sender attribution; omit to send without attribution. */
   const sendForward = async (
     content: string,
-    forwardMeta: { senderId: string; senderName?: string },
+    forwardMeta?: { senderId: string; senderName?: string },
   ): Promise<boolean> => {
     const roomId = chatStore.activeRoomId;
     if (!roomId || !content.trim()) return false;
@@ -1319,7 +1319,7 @@ export function useMessages() {
         await dbKit.syncEngine.enqueue(
           "send_message",
           roomId,
-          { content: trimmed, forwardedFrom: forwardMeta },
+          { content: trimmed, ...(forwardMeta ? { forwardedFrom: forwardMeta } : {}) },
           localMsg.clientId,
         );
 
@@ -1344,21 +1344,18 @@ export function useMessages() {
       if (!matrixService.isReady()) return false;
 
       const roomCrypto = authStore.pcrypto?.rooms[roomId] as PcryptoRoomInstance | undefined;
-      const fwdMeta = {
-        sender_id: forwardMeta.senderId,
-        sender_name: forwardMeta.senderName,
-      };
+      const fwdMeta = forwardMeta
+        ? { sender_id: forwardMeta.senderId, sender_name: forwardMeta.senderName }
+        : undefined;
 
       if (roomCrypto?.canBeEncrypt()) {
         const encrypted = await roomCrypto.encryptEvent(trimmed);
-        (encrypted as Record<string, unknown>)["forwarded_from"] = fwdMeta;
+        if (fwdMeta) (encrypted as Record<string, unknown>)["forwarded_from"] = fwdMeta;
         await matrixService.sendEncryptedText(roomId, encrypted);
       } else {
-        await matrixService.sendEncryptedText(roomId, {
-          body: trimmed,
-          msgtype: "m.text",
-          forwarded_from: fwdMeta,
-        });
+        const content: Record<string, unknown> = { body: trimmed, msgtype: "m.text" };
+        if (fwdMeta) content["forwarded_from"] = fwdMeta;
+        await matrixService.sendEncryptedText(roomId, content);
       }
       return true;
     } catch (e) {

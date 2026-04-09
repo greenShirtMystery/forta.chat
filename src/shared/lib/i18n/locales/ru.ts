@@ -244,6 +244,9 @@ export const ru: Record<TranslationKey, string> = {
   "forward.noChats": "Чаты не найдены",
   "forward.sending": "Отправка...",
   "forward.message": "Пересланное сообщение",
+  "forward.showSender": "Показать имя отправителя",
+  "forward.hideSender": "Скрыть имя отправителя",
+  "forward.changeChat": "Переслать в другой чат",
 
   // ── Pinned bar ──
   "pinned.message": "Закреплённое сообщение",

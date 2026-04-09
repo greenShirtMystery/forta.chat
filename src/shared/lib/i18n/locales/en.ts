@@ -242,6 +242,9 @@ export const en = {
   "forward.noChats": "No chats found",
   "forward.sending": "Sending...",
   "forward.message": "Forwarded message",
+  "forward.showSender": "Show sender name",
+  "forward.hideSender": "Hide sender name",
+  "forward.changeChat": "Forward to another chat",
 
   // ── Pinned bar ──
   "pinned.message": "Pinned Message",
