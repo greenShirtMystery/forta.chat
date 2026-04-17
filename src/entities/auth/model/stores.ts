@@ -304,16 +304,21 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
           try {
             const rawAddresses = ids.map((id) => hexDecode(id));
 
-            // Load SDK profiles and raw profiles in PARALLEL
-            const [, rawProfiles] = await Promise.all([
-              appInitializer.loadUsersInfo(rawAddresses).catch((e) => { console.warn("[pcrypto] loadUsersInfo failed:", e); }),
-              appInitializer.loadUsersInfoRaw(rawAddresses).catch(() => [] as Record<string, unknown>[]),
-            ]);
+            // Single SDK load (getuserprofile once per batch); raw rows stored pre-cleanData in SDK
+            await appInitializer
+              .loadUsersInfo(rawAddresses, { update: false })
+              .catch((e) => {
+                console.warn("[pcrypto] loadUsersInfo failed:", e);
+              });
 
-            // Build lookup map for raw profiles (O(1) instead of O(n) per user)
             const rawProfileMap = new Map<string, Record<string, unknown>>();
-            for (const p of rawProfiles) {
+            for (const rawAddr of rawAddresses) {
+              var p = appInitializer.getUserData(rawAddr);
+
               if (p && (p as any).address) {
+
+                p = p.export(true)
+
                 rawProfileMap.set((p as any).address, p);
               }
             }
@@ -354,8 +359,6 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
               if (source.id == null && sdkUser && (sdkUser as any).id != null) {
                 source.id = (sdkUser as any).id;
               }
-
-              console.error("[getUsersInfo] id=" + hexId.slice(0,10) + " sdkPath=" + sdkPath + " sdkKeys=" + ((sdkUser as any)?.keys?.length ?? 0) + " finalKeys=" + keys.length + " k0=" + (keys[0]?.slice(0,10) ?? "none") + " sdkUser=" + (sdkUser ? "yes" : "no") + " sourceId=" + ((source as any)?.id ?? "none"));
 
               return { id: hexId, keys, source };
             });
@@ -719,7 +722,7 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
 
   /** Verify user has 12 published encryption keys; re-publish if missing.
    *  Called on every login to catch users stuck in broken state.
-   *  Uses blockchain RPC (not local SDK cache) to avoid false negatives.
+   *  Uses SDK getuserprofile with update:true (not cache-only) to avoid false negatives.
    *  Skips if registration is already in progress (register() handles it). */
   const verifyAndRepublishKeys = async () => {
     if (!address.value || !privateKey.value) return;
@@ -740,7 +743,7 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
       return;
     }
 
-    // Step 2: Cache may be stale/empty after login — verify via blockchain RPC
+    // Step 2: Cache may be stale/empty after login — verify via fresh SDK profile load
     console.log("[auth] Cache shows", cachedKeys.length, "keys, verifying via RPC...");
     try {
       const rawProfiles = await appInitializer.loadUsersInfoRaw([address.value]);
@@ -831,7 +834,8 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
         }
 
         return { data: authData, error: null };
-      } catch {
+      } catch (e){
+        console.error(e)
         return { data: null, error: "Invalid private key or mnemonic" };
       }
     }
@@ -1194,7 +1198,9 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
       // Keep overlay visible for 1.5s to show success step
       await new Promise(resolve => setTimeout(resolve, 1500));
 
+
       try {
+        await appInitializer.loadUsersInfo([address.value!], { update: true });
         await appInitializer.initializeAndFetchUserData(
           address.value!,
           (data: UserData) => {
@@ -1513,7 +1519,8 @@ export const useAuthStore = defineStore(NAMESPACE, () => {
     loadPost,
     loadPostComments,
     loadPostScores,
-    loadUsersInfo: (addresses: string[]) => appInitializer.loadUsersInfo(addresses),
+    loadUsersInfo: (addresses: string[], options?: { update?: boolean }) =>
+      appInitializer.loadUsersInfo(addresses, options),
     login,
     logout,
     matrixError,
