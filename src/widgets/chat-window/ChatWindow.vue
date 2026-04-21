@@ -258,10 +258,21 @@ const handleSelectionCopy = () => {
 };
 
 const handleSelectionDelete = () => {
-  // Set the first selected message as deletingMessage (triggers the delete modal in MessageList)
+  // Collect ALL selected messages (was: only first — that was bug #195).
+  // Populate deletingMessages array; MessageList modal dispatches on array length.
   const ids = chatStore.selectedMessageIds;
-  const msg = chatStore.activeMessages.find(m => ids.has(m.id));
-  if (msg) chatStore.deletingMessage = msg;
+  const msgs = chatStore.activeMessages.filter(m => ids.has(m.id));
+  if (msgs.length === 0) return;
+  chatStore.deletingMessages = msgs;
+};
+
+const handleSelectionForward = () => {
+  // Bulk-forward the current multi-select to another chat. Opens ForwardPicker
+  // in bulk mode; singular forward (context menu → draft) is unaffected.
+  const ids = chatStore.selectedMessageIds;
+  const msgs = chatStore.activeMessages.filter(m => ids.has(m.id));
+  if (msgs.length === 0) return;
+  chatStore.initBulkForward(msgs);
 };
 
 /** Typing indicator text */
@@ -574,6 +585,7 @@ onUnmounted(() => {
           v-if="chatStore.selectionMode"
           @copy="handleSelectionCopy"
           @delete="handleSelectionDelete"
+          @forward="handleSelectionForward"
         />
         <MessageInput
           v-else

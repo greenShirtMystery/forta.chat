@@ -262,6 +262,8 @@ export const en = {
   "messageList.typingTwo": "{name1} and {name2} are typing",
   "messageList.typingMany": "{name} and {count} more are typing",
   "messageList.deleteMessage": "Delete message?",
+  "messageList.deleteMessagesTitle": "Delete {count} selected messages?",
+  "messageList.deleteResultSummary": "Deleted {succeeded}, failed {failed}",
   "messageList.deleteForEveryone": "Delete for everyone",
   "messageList.deleteForMe": "Delete for me",
   "messageList.cancel": "Cancel",
@@ -311,6 +313,12 @@ export const en = {
   "forward.cancelConfirm.description": "You selected 1 message from chat with {name}.",
   "forward.cancelConfirm.settings": "Forward settings",
   "forward.cancelConfirm.cancel": "Cancel forwarding",
+  "forward.resultSuccess": "Forwarded: {count}",
+  "forward.resultSummary": "Forwarded {succeeded} of {total}",
+  "forward.bulkTitle": "Forward {count} messages",
+  "forward.bulkFrom": "From: {names}",
+  "forward.bulkCancelConfirm.title": "{count} messages",
+  "forward.bulkCancelConfirm.description": "You selected {count} messages from chat with {name}.",
 
   // ── Pinned bar ──
   "pinned.message": "Pinned Message",
