@@ -37,6 +37,13 @@ class CallPlugin : Plugin() {
 
     companion object {
         private const val TAG = "CallPlugin"
+        // Dedicated executor for routing teardown so the Capacitor plugin
+        // thread is not blocked by AudioRouter.stop() — that path can wait
+        // up to 500ms for the SCO_DISCONNECTED broadcast on API < 31, and
+        // serializing every plugin call behind that wait risks ANRs on
+        // slow OEMs (Xiaomi/Realme/INFINIX).
+        private val cleanupExecutor: java.util.concurrent.ExecutorService =
+            java.util.concurrent.Executors.newSingleThreadExecutor()
     }
 
     private var audioRouter: AudioRouter? = null
@@ -392,8 +399,69 @@ class CallPlugin : Plugin() {
 
     @PluginMethod
     fun stopAudioRouting(call: PluginCall) {
-        audioRouter?.stop()
-        call.resolve()
+        // Dispatch to a dedicated executor so the Capacitor plugin thread
+        // is freed immediately. AudioRouter.stop() blocks up to 500ms
+        // waiting for SCO_DISCONNECTED on API < 31; running it on the
+        // plugin thread would serialize every other native call (push,
+        // status bar, share) and risk ANRs.
+        cleanupExecutor.execute {
+            try {
+                audioRouter?.stop()
+            } catch (e: Exception) {
+                Log.e(TAG, "stopAudioRouting threw", e)
+            }
+            call.resolve()
+        }
+    }
+
+    /**
+     * Session 23: brute-force reset of audio state. Bypasses
+     * [AudioRouter.isActive] guard so the device's audio mode is reset
+     * even when the lifecycle bookkeeping says routing is already
+     * inactive but the system is still in MODE_IN_COMMUNICATION.
+     *
+     * Called by the JS app-resume watchdog when it detects a stuck
+     * VoIP audio mode without an active call. Runs on cleanupExecutor
+     * for the same ANR-avoidance reason as stopAudioRouting above.
+     */
+    @PluginMethod
+    fun forceStopAudio(call: PluginCall) {
+        cleanupExecutor.execute {
+            try {
+                AudioRouter.getSharedInstance(context).forceStop()
+            } catch (e: Exception) {
+                Log.e(TAG, "forceStopAudio threw", e)
+            }
+            call.resolve()
+        }
+    }
+
+    /**
+     * Session 23: snapshot of current AudioManager state. Consumed by
+     * the JS watchdog to decide whether to forceStopAudio on app
+     * resume. Returns mode as a string identifier so JS does not have
+     * to hardcode the Android numeric constants.
+     */
+    @PluginMethod
+    fun getAudioStatus(call: PluginCall) {
+        val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val modeStr = when (am.mode) {
+            AudioManager.MODE_NORMAL -> "MODE_NORMAL"
+            AudioManager.MODE_IN_COMMUNICATION -> "MODE_IN_COMMUNICATION"
+            AudioManager.MODE_RINGTONE -> "MODE_RINGTONE"
+            AudioManager.MODE_IN_CALL -> "MODE_IN_CALL"
+            else -> "UNKNOWN(${am.mode})"
+        }
+        @Suppress("DEPRECATION")
+        val isBtScoOn = am.isBluetoothScoOn
+        @Suppress("DEPRECATION")
+        val isSpeakerOn = am.isSpeakerphoneOn
+        val result = JSObject().apply {
+            put("mode", modeStr)
+            put("isSpeakerOn", isSpeakerOn)
+            put("isBtScoOn", isBtScoOn)
+        }
+        call.resolve(result)
     }
 
     @PluginMethod
